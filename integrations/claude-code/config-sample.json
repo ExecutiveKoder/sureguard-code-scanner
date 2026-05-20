@@ -1,0 +1,10 @@
+{
+  "_comment": "Drop this into ~/.config/claude-code/mcp.json (or merge into an existing one). Claude Code will register Sureguard as an MCP server and call its tools while reviewing or generating code.",
+  "mcpServers": {
+    "sureguard": {
+      "command": "uvx",
+      "args": ["sureguard-mcp"],
+      "env": {}
+    }
+  }
+}

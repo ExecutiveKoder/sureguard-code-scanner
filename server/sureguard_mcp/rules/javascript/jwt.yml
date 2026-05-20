@@ -1,0 +1,33 @@
+rules:
+  - id: sureguard.javascript.jwt-alg-none
+    pattern-either:
+      - pattern: jwt.verify($T, $K, {algorithms: ["none"]})
+      - pattern: jwt.verify($T, $K, {algorithms: ['none']})
+      - pattern: jwt.decode($T, {complete: true, ...})
+    message: |
+      JWT alg=none accepted, or jwt.decode used without signature verification.
+      Always use jwt.verify with an explicit algorithm allowlist.
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-347"]
+      shortDescription: "JWT signature not enforced"
+
+  - id: sureguard.javascript.cors-allow-all-with-credentials
+    pattern-either:
+      - pattern: |
+          cors({origin: "*", credentials: true})
+      - pattern: |
+          cors({origin: true, credentials: true})
+    message: |
+      Wildcard CORS combined with credentials: true is a known pattern that
+      browsers reject for good reason; if it works, the server is misconfigured
+      and any origin can read authenticated responses.
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-942"]
+      owasp: ["A05:2021"]
+      shortDescription: "Wildcard CORS with credentials"

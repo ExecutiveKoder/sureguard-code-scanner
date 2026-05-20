@@ -1,0 +1,167 @@
+"""Gitleaks wrapper for secret detection.
+
+We use Gitleaks because it ships a curated default rule set and runs fast
+on raw filesystem trees (not just git history). If it isn't installed, we
+fall back to a small pattern-and-entropy detector so `scan_secrets` always
+returns *something* useful — important for the demo path.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import re
+import shutil
+from pathlib import Path
+
+from ..models import Finding, Location, Severity
+
+
+class GitleaksNotInstalled(RuntimeError):
+    pass
+
+
+_FALLBACK_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
+    (
+        "sureguard.secret.aws-access-key",
+        "AWS access key id",
+        re.compile(r"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"),
+    ),
+    (
+        "sureguard.secret.aws-secret-key",
+        "AWS secret access key (heuristic)",
+        re.compile(r"(?i)aws(.{0,20})?(secret|sk)[^\n]{0,3}[:=][^\n]{0,3}([A-Za-z0-9/+=]{40})"),
+    ),
+    (
+        "sureguard.secret.openai-key",
+        "OpenAI API key",
+        re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    ),
+    (
+        "sureguard.secret.anthropic-key",
+        "Anthropic API key",
+        re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"),
+    ),
+    (
+        "sureguard.secret.github-token",
+        "GitHub token",
+        re.compile(r"gh[pousr]_[A-Za-z0-9]{36,255}"),
+    ),
+    (
+        "sureguard.secret.slack-token",
+        "Slack token",
+        re.compile(r"xox[abprs]-[A-Za-z0-9-]{10,}"),
+    ),
+    (
+        "sureguard.secret.private-key",
+        "Private key block",
+        re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    ),
+]
+
+
+def _entropy(s: str) -> float:
+    if not s:
+        return 0.0
+    freq: dict[str, int] = {}
+    for c in s:
+        freq[c] = freq.get(c, 0) + 1
+    n = len(s)
+    return -sum((c / n) * math.log2(c / n) for c in freq.values())
+
+
+async def run_gitleaks(target_path: Path, timeout_seconds: int = 60) -> list[Finding]:
+    binary = shutil.which("gitleaks")
+    if not binary:
+        raise GitleaksNotInstalled("gitleaks not on PATH")
+
+    report = target_path / ".sureguard-gitleaks.json"
+    if report.exists():
+        report.unlink()
+
+    cmd = [
+        binary,
+        "detect",
+        "--no-git",
+        "--source",
+        str(target_path),
+        "--report-format",
+        "json",
+        "--report-path",
+        str(report),
+        "--exit-code",
+        "0",
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
+
+    if not report.exists():
+        return []
+    try:
+        records = json.loads(report.read_text())
+    except json.JSONDecodeError:
+        return []
+    finally:
+        report.unlink(missing_ok=True)
+
+    findings: list[Finding] = []
+    for rec in records or []:
+        findings.append(
+            Finding(
+                id=f"sureguard.secret.{rec.get('RuleID', 'unknown')}",
+                title=f"Secret: {rec.get('Description', rec.get('RuleID', 'unknown'))}",
+                severity=Severity.HIGH,
+                category="secret",
+                message=rec.get("Description") or "Hardcoded secret detected.",
+                location=Location(
+                    path=rec.get("File"),
+                    line=rec.get("StartLine"),
+                    end_line=rec.get("EndLine"),
+                    snippet=(rec.get("Match") or "")[:240] or None,
+                ),
+                fix="Move the value to a secrets manager (Vault, AWS Secrets Manager, env vars) and rotate this credential — it must be considered compromised.",
+            )
+        )
+    return findings
+
+
+def fallback_scan_text(content: str, path: str | None = None) -> list[Finding]:
+    """Pattern + entropy detector for environments without gitleaks installed."""
+    findings: list[Finding] = []
+    for finding_id, title, pattern in _FALLBACK_PATTERNS:
+        for m in pattern.finditer(content):
+            line = content.count("\n", 0, m.start()) + 1
+            findings.append(
+                Finding(
+                    id=finding_id,
+                    title=title,
+                    severity=Severity.HIGH,
+                    category="secret",
+                    message=f"Looks like a {title.lower()} embedded in source.",
+                    location=Location(path=path, line=line, snippet=m.group(0)[:120]),
+                    fix="Rotate immediately and move to a secrets manager.",
+                )
+            )
+
+    # High-entropy long literals — common LLM mistake when it invents a "placeholder" that looks real.
+    for m in re.finditer(r'["\']([A-Za-z0-9+/=_\-]{32,})["\']', content):
+        token = m.group(1)
+        if _entropy(token) > 4.5:
+            line = content.count("\n", 0, m.start()) + 1
+            findings.append(
+                Finding(
+                    id="sureguard.secret.high-entropy-literal",
+                    title="High-entropy literal",
+                    severity=Severity.MEDIUM,
+                    category="secret",
+                    message="Long, high-entropy string literal looks like a credential. AI-generated code frequently embeds real-looking tokens 'for the example'.",
+                    location=Location(path=path, line=line, snippet=token[:60] + "…"),
+                    fix="If this is a real secret, rotate it. If it's an example, use an obvious placeholder like 'REPLACE_ME'.",
+                )
+            )
+    return findings

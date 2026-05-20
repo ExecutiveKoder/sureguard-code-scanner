@@ -1,0 +1,28 @@
+rules:
+  - id: sureguard.javascript.node-tls-reject-unauthorized
+    pattern-either:
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
+      - pattern: |
+          $X.rejectUnauthorized = false
+    message: |
+      Node TLS verification has been disabled globally. Any network you don't
+      fully control can MITM this. Remove this line.
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-295"]
+      owasp: ["A07:2021"]
+      shortDescription: "NODE_TLS_REJECT_UNAUTHORIZED disabled"
+
+  - id: sureguard.javascript.axios-https-agent-no-verify
+    pattern-either:
+      - pattern: new https.Agent({rejectUnauthorized: false, ...})
+      - pattern: new https.Agent({rejectUnauthorized: false})
+    message: TLS certificate verification disabled on https.Agent.
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-295"]

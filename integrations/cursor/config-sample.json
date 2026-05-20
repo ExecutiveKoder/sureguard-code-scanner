@@ -1,0 +1,9 @@
+{
+  "_comment": "Cursor: Settings → MCP → Add new MCP server. Paste the server block below. Cursor will surface Sureguard's tools to the chat agent.",
+  "mcpServers": {
+    "sureguard": {
+      "command": "uvx",
+      "args": ["sureguard-mcp"]
+    }
+  }
+}

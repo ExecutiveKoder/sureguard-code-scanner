@@ -1,0 +1,18 @@
+rules:
+  - id: sureguard.python.jwt-alg-none
+    pattern-either:
+      - pattern: jwt.decode(..., algorithms=["none"], ...)
+      - pattern: jwt.decode(..., algorithms=["None"], ...)
+      - pattern: jwt.decode(..., verify=False, ...)
+      - pattern: jwt.decode(..., options={"verify_signature": False, ...}, ...)
+    message: |
+      JWT signature verification is disabled. The token is being trusted
+      blind — anyone can mint one. Pin the expected algorithm explicitly.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-347"]
+      owasp: ["A02:2021 Cryptographic Failures"]
+      shortDescription: "JWT signature verification disabled"
+      fix: 'jwt.decode(token, key, algorithms=["RS256"])  # or "HS256", explicitly.'

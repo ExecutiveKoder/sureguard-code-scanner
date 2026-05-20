@@ -1,0 +1,27 @@
+rules:
+  - id: sureguard.javascript.child-process-exec-with-interpolation
+    pattern-either:
+      - pattern: exec(`... ${$X} ...`, ...)
+      - pattern: execSync(`... ${$X} ...`, ...)
+      - pattern: exec("..." + $X + "...", ...)
+    message: |
+      child_process.exec with shell-interpolated input is a command-injection
+      sink. Use execFile / spawn with an argv array.
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-78"]
+      owasp: ["A03:2021"]
+      shortDescription: "child_process.exec with interpolated input"
+
+  - id: sureguard.javascript.eval-on-dynamic-input
+    pattern-either:
+      - pattern: eval($X)
+      - pattern: new Function($X)
+    message: eval / new Function on dynamic input is arbitrary code execution.
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-95"]

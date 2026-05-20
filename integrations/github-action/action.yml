@@ -1,0 +1,55 @@
+name: "Sureguard"
+description: "AI-aware secure code review for AI-generated code. Catches hallucinated packages, insecure patterns, secrets, and known CVEs."
+author: "Sureguard contributors"
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  fail-on:
+    description: "Minimum severity that fails the build: info | low | medium | high | critical"
+    required: false
+    default: "high"
+  manifest:
+    description: "Path to a dependency manifest (requirements.txt, package.json, package-lock.json, pyproject.toml). Optional."
+    required: false
+  scan-diff:
+    description: "Scan only the PR diff instead of the whole tree."
+    required: false
+    default: "true"
+  sarif-output:
+    description: "Where to write the SARIF result."
+    required: false
+    default: "sureguard.sarif"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Sureguard
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        pip install sureguard-mcp semgrep gitleaks
+
+    - name: Run Sureguard
+      shell: bash
+      env:
+        FAIL_ON: ${{ inputs.fail-on }}
+        MANIFEST: ${{ inputs.manifest }}
+        SCAN_DIFF: ${{ inputs.scan-diff }}
+        SARIF_OUTPUT: ${{ inputs.sarif-output }}
+        BASE_REF: ${{ github.event.pull_request.base.sha }}
+      run: |
+        python -m sureguard_mcp.cli ci \
+          --fail-on "$FAIL_ON" \
+          ${MANIFEST:+--manifest "$MANIFEST"} \
+          ${SCAN_DIFF:+--scan-diff} \
+          --base "${BASE_REF:-HEAD~1}" \
+          --sarif "$SARIF_OUTPUT"
+
+    - name: Upload SARIF to GitHub code scanning
+      if: always()
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-output }}

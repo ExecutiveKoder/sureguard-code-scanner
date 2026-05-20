@@ -1,0 +1,49 @@
+rules:
+  - id: sureguard.python.md5-for-security
+    pattern-either:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.new("md5", ...)
+      - pattern: hashlib.new('md5', ...)
+    message: |
+      MD5 is cryptographically broken — do not use it for passwords, signatures,
+      tokens, or any integrity check that an attacker could attack.
+      Use hashlib.sha256 for hashing, or bcrypt/argon2 for passwords.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-327"]
+      owasp: ["A02:2021 Cryptographic Failures"]
+      shortDescription: "MD5 used for security"
+      fix: "Replace hashlib.md5(...) with hashlib.sha256(...) for integrity, or bcrypt/argon2 for passwords."
+
+  - id: sureguard.python.sha1-for-security
+    pattern-either:
+      - pattern: hashlib.sha1(...)
+      - pattern: hashlib.new("sha1", ...)
+    message: |
+      SHA-1 has documented collision attacks. Use SHA-256 or higher.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-327"]
+      shortDescription: "SHA-1 used for security"
+      fix: "Use hashlib.sha256(...) or better."
+
+  - id: sureguard.python.weak-prng-for-secrets
+    pattern-either:
+      - pattern: random.random(...)
+      - pattern: random.randint(...)
+      - pattern: random.choice(...)
+      - pattern: random.SystemRandom().choice($X)
+    message: |
+      `random` is a deterministic PRNG and is not safe for tokens, salts,
+      session IDs, or anything that should be unguessable. Use `secrets`.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-338"]
+      shortDescription: "Non-cryptographic PRNG used for secret generation"
+      fix: "Use `secrets.token_urlsafe`, `secrets.token_hex`, or `secrets.choice` for security-sensitive randomness."

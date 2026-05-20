@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Caches
+.sureguard-cache/
+*.sqlite
+*.sqlite-journal
+
+# Test artifacts
+.test-home/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Local config that should not be committed
+.env
+.env.*
+!.env.example

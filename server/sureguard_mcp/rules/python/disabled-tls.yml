@@ -1,0 +1,53 @@
+rules:
+  - id: sureguard.python.requests-verify-false
+    pattern-either:
+      - pattern: requests.$M(..., verify=False, ...)
+      - pattern: httpx.$M(..., verify=False, ...)
+      - pattern: |
+          $S = requests.Session()
+          ...
+          $S.verify = False
+    message: |
+      TLS certificate verification is disabled. Any network you don't fully
+      control can MITM this. This is one of the most common LLM-emitted
+      "make the error go away" patterns.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-295"]
+      owasp: ["A07:2021 Identification and Authentication Failures"]
+      shortDescription: "TLS verification disabled"
+      fix: |
+        Remove `verify=False`. If the underlying cert is bad, fix the cert
+        (or set REQUESTS_CA_BUNDLE for a private CA) — do not skip the check.
+
+  - id: sureguard.python.ssl-no-verify
+    pattern-either:
+      - pattern: ssl._create_unverified_context(...)
+      - pattern: |
+          $CTX = ssl.create_default_context()
+          ...
+          $CTX.check_hostname = False
+      - pattern: |
+          $CTX = ssl.create_default_context()
+          ...
+          $CTX.verify_mode = ssl.CERT_NONE
+    message: TLS verification has been disabled on the SSL context.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-295"]
+      shortDescription: "SSL context verification disabled"
+
+  - id: sureguard.python.urllib3-disable-warnings
+    pattern: urllib3.disable_warnings(...)
+    message: |
+      Disabling urllib3 warnings is almost always paired with verify=False.
+      Re-enable verification rather than silencing the warning.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-295"]

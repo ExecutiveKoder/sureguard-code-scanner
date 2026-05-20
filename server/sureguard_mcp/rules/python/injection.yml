@@ -1,0 +1,51 @@
+rules:
+  - id: sureguard.python.sql-string-concat
+    pattern-either:
+      - pattern: $CURSOR.execute("..." + $X + "...")
+      - pattern: $CURSOR.execute(f"... {$X} ...")
+      - pattern: $CURSOR.execute("...{}".format($X))
+      - pattern: $CURSOR.execute("..." % $X)
+    message: |
+      SQL built by string concatenation / f-string / % is the textbook
+      SQL-injection sink. Use parameterized queries with `?` or named params.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-89"]
+      owasp: ["A03:2021 Injection"]
+      shortDescription: "SQL built from string interpolation"
+      fix: 'Use parameterized queries: cursor.execute("SELECT ... WHERE x = ?", (value,))'
+
+  - id: sureguard.python.subprocess-shell-true-with-user-input
+    pattern-either:
+      - pattern: subprocess.run($CMD + $X, ..., shell=True, ...)
+      - pattern: subprocess.run(f"... {$X} ...", ..., shell=True, ...)
+      - pattern: os.system($CMD + $X)
+      - pattern: os.system(f"... {$X} ...")
+    message: |
+      Building a shell command from interpolated values is a command-injection
+      sink. Drop `shell=True` and pass argv as a list.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-78"]
+      owasp: ["A03:2021 Injection"]
+      shortDescription: "Shell command built from interpolation"
+
+  - id: sureguard.python.eval-of-input
+    pattern-either:
+      - pattern: eval(input(...))
+      - pattern: exec(input(...))
+      - pattern: eval($X)
+      - pattern: exec($X)
+    message: |
+      `eval`/`exec` on dynamic input is arbitrary code execution. There is
+      almost never a legitimate need; if you think you need it, you don't.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: insecure-pattern
+      cwe: ["CWE-95"]
+      shortDescription: "eval/exec on dynamic input"
