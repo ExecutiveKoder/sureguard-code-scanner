@@ -25,6 +25,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "pyyaml>=6.0.1",
     "unidiff>=0.7.5",
+    "packaging>=23.0",
 ]
 
 [project.optional-dependencies]

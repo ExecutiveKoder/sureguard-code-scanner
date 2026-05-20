@@ -16,10 +16,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from packaging.version import InvalidVersion, Version
 
 from .engines.gitleaks import GitleaksNotInstalled, run_gitleaks
 from .engines.semgrep import SemgrepNotInstalled, run_semgrep
@@ -128,12 +132,226 @@ _CATEGORY_LABELS = {
 }
 
 
+@dataclass
+class Action:
+    """One row in the action plan."""
+
+    kind: str  # "code" | "secret" | "hallucinated" | "upgrade"
+    title: str
+    detail: str
+    severity: Severity
+    finding_count: int
+    install_command: str | None = None  # e.g. 'pip install -U "requests>=2.32.4"'
+    ecosystem: str | None = None
+    package: str | None = None
+    target_version: str | None = None
+
+
+# Capture: "Upgrade <package> to >= <version>." (the format scan_dependencies emits)
+_FIX_RE = re.compile(r"Upgrade\s+(\S+?)\s+to\s+>=\s+([0-9A-Za-z._\-+]+?)\.?\s*$")
+
+
+def _safe_version(s: str) -> Version | None:
+    try:
+        return Version(s)
+    except InvalidVersion:
+        return None
+
+
+def _rel(path: str | None, root: Path | None) -> str:
+    """Best-effort relativize a path against the scan root for display."""
+    if not path:
+        return "(unknown)"
+    if root is None:
+        return path
+    try:
+        return str(Path(path).resolve().relative_to(root.resolve()))
+    except (ValueError, OSError):
+        return path
+
+
+def _build_action_plan(findings: list[Finding], target: Path | None = None) -> list[Action]:
+    """Collapse 100s of findings into the handful of moves that resolve them."""
+    actions: list[Action] = []
+
+    # --- SAST findings: group by file, one action per file ---
+    sast_by_file: dict[str, list[Finding]] = {}
+    for f in findings:
+        if f.category != "insecure-pattern":
+            continue
+        path = _rel(f.location.path if f.location else None, target)
+        sast_by_file.setdefault(path, []).append(f)
+    for path, fs in sorted(sast_by_file.items(), key=lambda kv: -len(kv[1])):
+        top = max(fs, key=lambda f: _SEV_ORDER.index(f.severity))
+        line_suffix = f":{top.location.line}" if top.location and top.location.line else ""
+        detail = top.fix or top.title
+        actions.append(
+            Action(
+                kind="code",
+                title=f"Fix insecure pattern in {path}{line_suffix}",
+                detail=(detail.split('\n', 1)[0][:160] if detail else top.title),
+                severity=top.severity,
+                finding_count=len(fs),
+            )
+        )
+
+    # --- Secrets: one action per file ---
+    secrets_by_file: dict[str, list[Finding]] = {}
+    for f in findings:
+        if f.category != "secret":
+            continue
+        path = _rel(f.location.path if f.location else None, target)
+        secrets_by_file.setdefault(path, []).append(f)
+    for path, fs in secrets_by_file.items():
+        actions.append(
+            Action(
+                kind="secret",
+                title=f"Rotate hardcoded secret in {path}",
+                detail="Treat as compromised. Rotate the credential, then move it to a secrets manager / env var.",
+                severity=Severity.HIGH,
+                finding_count=len(fs),
+            )
+        )
+
+    # --- Hallucinated packages: one action per package ---
+    for f in findings:
+        if f.category != "hallucinated-package":
+            continue
+        actions.append(
+            Action(
+                kind="hallucinated",
+                title=f.title,
+                detail=f.fix or "Verify this package name actually exists in the registry; remove if not.",
+                severity=f.severity,
+                finding_count=1,
+            )
+        )
+
+    # --- CVE findings: group by (ecosystem, package), take max recommended fix version ---
+    @dataclass
+    class _Bucket:
+        package: str
+        ecosystem: str
+        fix_versions: list[Version] = field(default_factory=list)
+        findings: list[Finding] = field(default_factory=list)
+        titles: list[str] = field(default_factory=list)
+
+    buckets: dict[tuple[str, str], _Bucket] = {}
+    for f in findings:
+        if f.category != "vulnerability":
+            continue
+        if not f.fix:
+            continue
+        m = _FIX_RE.search(f.fix)
+        if not m:
+            continue
+        pkg, fix_ver_str = m.group(1), m.group(2)
+        # Ecosystem is implicit in the manifest path. Cheap heuristic from extension.
+        path = (f.location.path if f.location else "") or ""
+        if path.endswith(".txt") or path.endswith("pyproject.toml"):
+            ecosystem = "pypi"
+        elif path.endswith(".json"):
+            ecosystem = "npm"
+        else:
+            ecosystem = "unknown"
+        key = (ecosystem, pkg)
+        bucket = buckets.setdefault(key, _Bucket(package=pkg, ecosystem=ecosystem))
+        v = _safe_version(fix_ver_str)
+        if v is not None:
+            bucket.fix_versions.append(v)
+        bucket.findings.append(f)
+        bucket.titles.append(f.title)
+
+    for (ecosystem, pkg), bucket in buckets.items():
+        if not bucket.fix_versions:
+            continue
+        target_v = max(bucket.fix_versions)
+        # The package's most severe finding drives the action's severity.
+        worst = max(bucket.findings, key=lambda f: _SEV_ORDER.index(f.severity))
+        if ecosystem == "pypi":
+            install = f'pip install -U "{pkg}>={target_v}"'
+        elif ecosystem == "npm":
+            install = f'npm install {pkg}@^{target_v}'
+        else:
+            install = None
+        # Two-line detail: what gets fixed, what severity tier.
+        sev_summary = []
+        for sev in reversed(_SEV_ORDER):
+            n = sum(1 for f in bucket.findings if f.severity == sev)
+            if n:
+                sev_summary.append(f"{n} {sev.value}")
+        sample = bucket.titles[0]
+        # Strip "<ID> in <pkg>@<ver>" prefix from titles for the detail line.
+        sample = re.sub(r"^[A-Z\-]+\d[\w\-]*\s+in\s+", "", sample)
+        actions.append(
+            Action(
+                kind="upgrade",
+                title=f"Upgrade {pkg} → {target_v}",
+                detail=f"clears {len(bucket.findings)} CVE(s) ({', '.join(sev_summary)}) — e.g. {sample[:80]}",
+                severity=worst.severity,
+                finding_count=len(bucket.findings),
+                install_command=install,
+                ecosystem=ecosystem,
+                package=pkg,
+                target_version=str(target_v),
+            )
+        )
+
+    # Sort by severity desc, then by how many findings the action clears desc.
+    actions.sort(key=lambda a: (-_SEV_ORDER.index(a.severity), -a.finding_count))
+    return actions
+
+
+_KIND_LABEL = {
+    "code": ("CODE", "red"),
+    "secret": ("SECRET", "red"),
+    "hallucinated": ("PKG?", "red"),
+    "upgrade": ("UPGRADE", "blue"),
+}
+
+
+def _print_action_plan(actions: list[Action]) -> None:
+    if not actions:
+        return
+
+    print()
+    print(f"  {_color('bold')}Next actions{_color('reset')}  {_color('dim')}(fix these in order){_color('reset')}")
+    print(f"  {_color('dim')}{'─' * 70}{_color('reset')}")
+
+    for i, a in enumerate(actions, start=1):
+        label, label_color = _KIND_LABEL.get(a.kind, ("ACTION", "blue"))
+        sev_color, sev_weight = _SEV_STYLE[a.severity]
+        print(
+            f"   {_color('bold')}{i:>2}.{_color('reset')} "
+            f"{_color(label_color)}{label:<8}{_color('reset')} "
+            f"{_color(sev_weight)}{_color(sev_color)}[{a.severity.value}]{_color('reset')} "
+            f"{a.title}"
+        )
+        print(f"        {_color('dim')}{a.detail}{_color('reset')}")
+
+    # Group install commands by ecosystem so the user can copy-paste one block per stack.
+    pypi_upgrades = [a for a in actions if a.kind == "upgrade" and a.ecosystem == "pypi"]
+    npm_upgrades = [a for a in actions if a.kind == "upgrade" and a.ecosystem == "npm"]
+    if pypi_upgrades or npm_upgrades:
+        print()
+        print(f"  {_color('bold')}Copy-paste install commands{_color('reset')}")
+        if pypi_upgrades:
+            pkgs = " ".join(f'"{a.package}>={a.target_version}"' for a in pypi_upgrades)
+            print(f"    {_color('dim')}# Python{_color('reset')}")
+            print(f"    pip install -U {pkgs}")
+        if npm_upgrades:
+            pkgs = " ".join(f"{a.package}@^{a.target_version}" for a in npm_upgrades)
+            print(f"    {_color('dim')}# Node{_color('reset')}")
+            print(f"    npm install {pkgs}")
+
+
 def _print_summary(
     target: Path,
     findings: list[Finding],
     warnings: list[str],
     elapsed_ms: int,
     top: int | None,
+    actions_only: bool = False,
 ) -> None:
     counts: dict[Severity, int] = dict.fromkeys(_SEV_ORDER, 0)
     cat_counts: dict[str, int] = {}
@@ -176,6 +394,21 @@ def _print_summary(
                 label = _CATEGORY_LABELS.get(cat, cat)
                 print(f"    {n:>4}  {label}")
 
+        # Action plan — what to actually do, in priority order.
+        actions = _build_action_plan(findings, target=target)
+        if actions:
+            _print_action_plan(actions)
+
+        if actions_only:
+            # Skip the detailed finding list entirely. The action plan above is the takeaway.
+            if warnings:
+                print()
+                for w in warnings:
+                    print(f"  {_color('yellow')}note:{_color('reset')} {w}")
+            print()
+            print(f"{_color('dim')}{len(findings)} finding(s) in {elapsed_ms} ms{_color('reset')}")
+            return
+
         ordered = sorted(
             findings,
             key=lambda f: (
@@ -192,11 +425,11 @@ def _print_summary(
         print()
         if top is not None and hidden > 0:
             print(
-                f"  {_color('bold')}Top {len(shown)} findings to fix first "
-                f"({hidden} more hidden — use --all to see them, or --json for the full list){_color('reset')}"
+                f"  {_color('bold')}Supporting detail — top {len(shown)} findings{_color('reset')}  "
+                f"{_color('dim')}({hidden} more hidden; --all for everything, --actions-only to suppress this list, --json for raw output){_color('reset')}"
             )
         else:
-            print(f"  {_color('bold')}Findings:{_color('reset')}")
+            print(f"  {_color('bold')}Supporting detail — all findings{_color('reset')}")
         print()
 
         for f in shown:
@@ -327,9 +560,23 @@ async def _run_scan(args: argparse.Namespace) -> int:
     elif args.sarif:
         Path(args.sarif).write_text(json.dumps(findings_to_sarif(findings), indent=2))
         print(f"SARIF written to {args.sarif}", file=sys.stderr)
-        _print_summary(target, findings, warnings, elapsed_ms, top=None if args.all else args.top)
+        _print_summary(
+            target,
+            findings,
+            warnings,
+            elapsed_ms,
+            top=None if args.all else args.top,
+            actions_only=args.actions_only,
+        )
     else:
-        _print_summary(target, findings, warnings, elapsed_ms, top=None if args.all else args.top)
+        _print_summary(
+            target,
+            findings,
+            warnings,
+            elapsed_ms,
+            top=None if args.all else args.top,
+            actions_only=args.actions_only,
+        )
 
     threshold = Severity(args.fail_on)
     blockers = [f for f in findings if _meets_threshold(f.severity, threshold)]
@@ -401,7 +648,12 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--all",
         action="store_true",
-        help="Show every finding in the summary (overrides --top).",
+        help="Show every finding in the supporting-detail section (overrides --top).",
+    )
+    scan.add_argument(
+        "--actions-only",
+        action="store_true",
+        help="Print only the action plan, no supporting-detail finding list.",
     )
     scan.add_argument(
         "-v",
