@@ -29,7 +29,28 @@ from .tools.scan_dependencies import scan_dependencies
 
 _SEV_ORDER = [Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]
 _MANIFESTS = {"requirements.txt", "package.json", "package-lock.json", "pyproject.toml"}
-_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".tox", "dist", "build"}
+_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".svelte-kit",
+    "__pycache__",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    "target",
+    "vendor",
+    "third_party",
+    "site-packages",
+}
 
 
 def _meets_threshold(sev: Severity, threshold: Severity) -> bool:
@@ -65,20 +86,79 @@ def _fmt_sev(sev: Severity) -> str:
     return f"{_color(weight)}{_color(color)}{sev.value.upper():<8}{_color('reset')}"
 
 
+_SCORE_WEIGHTS = {
+    Severity.CRITICAL: 15.0,
+    Severity.HIGH: 3.0,
+    Severity.MEDIUM: 1.0,
+    Severity.LOW: 0.3,
+    Severity.INFO: 0.05,
+}
+
+
+def _project_score(counts: dict[Severity, int]) -> tuple[int, str]:
+    """Return (score 0-100, letter grade). Start at 100, deduct per finding by severity."""
+    penalty = sum(counts.get(sev, 0) * weight for sev, weight in _SCORE_WEIGHTS.items())
+    score = max(0, int(round(100 - penalty)))
+    if score >= 90:
+        grade = "A"
+    elif score >= 80:
+        grade = "B"
+    elif score >= 70:
+        grade = "C"
+    elif score >= 60:
+        grade = "D"
+    else:
+        grade = "F"
+    return score, grade
+
+
+def _grade_color(grade: str) -> str:
+    return {"A": "blue", "B": "blue", "C": "yellow", "D": "yellow", "F": "red"}.get(grade, "reset")
+
+
+# Friendly labels for the category breakdown.
+_CATEGORY_LABELS = {
+    "hallucinated-package": "Hallucinated / typosquat packages",
+    "vulnerability": "Dependency CVEs",
+    "insecure-pattern": "Insecure code patterns",
+    "secret": "Hardcoded secrets",
+    "outdated": "Outdated components",
+    "license": "License issues",
+    "supply-chain": "Supply-chain risks",
+}
+
+
 def _print_summary(
-    target: Path, findings: list[Finding], warnings: list[str], elapsed_ms: int
+    target: Path,
+    findings: list[Finding],
+    warnings: list[str],
+    elapsed_ms: int,
+    top: int | None,
 ) -> None:
     counts: dict[Severity, int] = dict.fromkeys(_SEV_ORDER, 0)
+    cat_counts: dict[str, int] = {}
     for f in findings:
         counts[f.severity] += 1
+        cat_counts[f.category] = cat_counts.get(f.category, 0) + 1
+
+    score, grade = _project_score(counts)
 
     print()
     print(f"{_color('bold')}Sureguard scan{_color('reset')}  {_color('dim')}{target}{_color('reset')}")
     print(f"{_color('dim')}{'─' * 72}{_color('reset')}")
 
+    # Score banner.
+    gcolor = _grade_color(grade)
+    print(
+        f"  {_color('bold')}Sureguard Score:{_color('reset')} "
+        f"{_color('bold')}{_color(gcolor)}{score} / 100  ({grade}){_color('reset')}"
+    )
+
     if not findings:
+        print()
         print(f"  {_color('blue')}no findings{_color('reset')}")
     else:
+        # Severity row.
         parts = []
         for sev in reversed(_SEV_ORDER):
             if counts[sev]:
@@ -87,17 +167,39 @@ def _print_summary(
                     f"{_color(weight)}{_color(color)}{counts[sev]} {sev.value}{_color('reset')}"
                 )
         print("  " + "   ".join(parts))
-        print()
+
+        # Category breakdown.
+        if cat_counts:
+            print()
+            print(f"  {_color('dim')}By category:{_color('reset')}")
+            for cat, n in sorted(cat_counts.items(), key=lambda kv: -kv[1]):
+                label = _CATEGORY_LABELS.get(cat, cat)
+                print(f"    {n:>4}  {label}")
 
         ordered = sorted(
             findings,
             key=lambda f: (
                 -_SEV_ORDER.index(f.severity),
+                -(f.risk_score or 0),
                 f.location.path if f.location and f.location.path else "",
                 f.location.line if f.location and f.location.line else 0,
             ),
         )
-        for f in ordered:
+
+        shown = ordered if top is None else ordered[:top]
+        hidden = len(ordered) - len(shown)
+
+        print()
+        if top is not None and hidden > 0:
+            print(
+                f"  {_color('bold')}Top {len(shown)} findings to fix first "
+                f"({hidden} more hidden — use --all to see them, or --json for the full list){_color('reset')}"
+            )
+        else:
+            print(f"  {_color('bold')}Findings:{_color('reset')}")
+        print()
+
+        for f in shown:
             loc = ""
             if f.location and f.location.path:
                 loc = f.location.path
@@ -225,9 +327,9 @@ async def _run_scan(args: argparse.Namespace) -> int:
     elif args.sarif:
         Path(args.sarif).write_text(json.dumps(findings_to_sarif(findings), indent=2))
         print(f"SARIF written to {args.sarif}", file=sys.stderr)
-        _print_summary(target, findings, warnings, elapsed_ms)
+        _print_summary(target, findings, warnings, elapsed_ms, top=None if args.all else args.top)
     else:
-        _print_summary(target, findings, warnings, elapsed_ms)
+        _print_summary(target, findings, warnings, elapsed_ms, top=None if args.all else args.top)
 
     threshold = Severity(args.fail_on)
     blockers = [f for f in findings if _meets_threshold(f.severity, threshold)]
@@ -290,6 +392,17 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-deps", action="store_true", help="Skip manifest / SCA scan.")
     scan.add_argument("--json", action="store_true", help="Emit findings as JSON instead of summary.")
     scan.add_argument("--sarif", help="Write SARIF to this path (still prints summary).")
+    scan.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="Show only the top N findings in the summary (default: 20). Use --all to show everything.",
+    )
+    scan.add_argument(
+        "--all",
+        action="store_true",
+        help="Show every finding in the summary (overrides --top).",
+    )
     scan.add_argument(
         "-v",
         "--verbose",

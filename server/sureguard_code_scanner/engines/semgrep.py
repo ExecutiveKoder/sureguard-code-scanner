@@ -17,6 +17,34 @@ from ..models import Finding, Location, Severity
 
 _RULES_DIR = Path(__file__).resolve().parents[1] / "rules"
 
+# Directories Sureguard should never SAST-scan: vendored, generated, or build
+# output. Scanning them produces a firehose of noise on legitimate library code
+# (MD5 in passlib, SHA-1 in dnssec, eval in Next.js webpack bundles) that drowns
+# the real findings in your own source.
+DEFAULT_EXCLUDES = [
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".svelte-kit",
+    ".venv",
+    "venv",
+    "env",
+    "__pycache__",
+    "dist",
+    "build",
+    "target",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "*.egg-info",
+    ".git",
+    "vendor",
+    "third_party",
+    "site-packages",
+]
+
 
 _SEVERITY_MAP = {
     "INFO": Severity.INFO,
@@ -46,9 +74,14 @@ async def run_semgrep(
     for rp in rule_paths or [_RULES_DIR]:
         rule_args.extend(["--config", str(rp)])
 
+    exclude_args: list[str] = []
+    for pattern in DEFAULT_EXCLUDES:
+        exclude_args.extend(["--exclude", pattern])
+
     cmd = [
         binary,
         *rule_args,
+        *exclude_args,
         "--json",
         "--quiet",
         "--no-git-ignore",
