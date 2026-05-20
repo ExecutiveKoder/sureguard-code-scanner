@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -128,6 +129,13 @@ def _iter_manifests(root: Path):
             yield path
 
 
+def _status(msg: str, quiet: bool) -> None:
+    """Print a single-line status update to stderr. Suppressed in --quiet."""
+    if quiet:
+        return
+    print(f"  {_color('dim')}…{_color('reset')} {msg}", file=sys.stderr, flush=True)
+
+
 async def _run_scan(args: argparse.Namespace) -> int:
     target = Path(args.path).resolve()
     if not target.exists():
@@ -141,29 +149,62 @@ async def _run_scan(args: argparse.Namespace) -> int:
     findings: list[Finding] = []
     warnings: list[str] = []
 
+    _status(f"scanning {target}", args.quiet)
+
     if not args.no_sast:
+        sast_started = time.monotonic()
+        _status("running Semgrep (SAST)…", args.quiet)
         try:
-            findings.extend(await run_semgrep(target))
+            sast_findings = await run_semgrep(target)
+            findings.extend(sast_findings)
+            _status(
+                f"Semgrep done in {int((time.monotonic() - sast_started) * 1000)}ms — "
+                f"{len(sast_findings)} finding(s)",
+                args.quiet,
+            )
         except SemgrepNotInstalled as e:
             warnings.append(str(e))
+            _status("Semgrep not installed — skipping SAST", args.quiet)
 
     if not args.no_secrets:
+        sec_started = time.monotonic()
+        _status("scanning for secrets (Gitleaks)…", args.quiet)
         try:
-            findings.extend(await run_gitleaks(target))
+            sec_findings = await run_gitleaks(target)
+            findings.extend(sec_findings)
+            _status(
+                f"Gitleaks done in {int((time.monotonic() - sec_started) * 1000)}ms — "
+                f"{len(sec_findings)} finding(s)",
+                args.quiet,
+            )
         except (GitleaksNotInstalled, FileNotFoundError):
             warnings.append(
                 "gitleaks not installed — skipping secrets scan. Install with "
                 "`brew install gitleaks`."
             )
+            _status("Gitleaks not installed — skipping secrets scan", args.quiet)
 
     if not args.no_deps:
-        for manifest in _iter_manifests(target):
+        manifests = list(_iter_manifests(target))
+        if manifests:
+            _status(
+                f"found {len(manifests)} manifest(s): "
+                + ", ".join(m.name for m in manifests),
+                args.quiet,
+            )
+        for manifest in manifests:
+            man_started = time.monotonic()
+            rel = str(manifest.relative_to(target))
+            _status(
+                f"scanning {rel} (registry verify → OSV → KEV → EPSS, may take 10–60s on first run)…",
+                args.quiet,
+            )
             try:
                 res = await scan_dependencies(manifest.name, manifest.read_text())
             except Exception as e:
                 warnings.append(f"{manifest}: {e}")
+                _status(f"{rel} failed: {e}", args.quiet)
                 continue
-            rel = str(manifest.relative_to(target))
             for f in res.findings:
                 if f.location is None:
                     f.location = Location(path=rel)
@@ -171,6 +212,11 @@ async def _run_scan(args: argparse.Namespace) -> int:
                     f.location.path = rel
                 findings.append(f)
             warnings.extend(res.warnings)
+            _status(
+                f"{rel} done in {int((time.monotonic() - man_started) * 1000)}ms — "
+                f"{len(res.findings)} finding(s)",
+                args.quiet,
+            )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
 
@@ -244,6 +290,16 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-deps", action="store_true", help="Skip manifest / SCA scan.")
     scan.add_argument("--json", action="store_true", help="Emit findings as JSON instead of summary.")
     scan.add_argument("--sarif", help="Write SARIF to this path (still prints summary).")
+    scan.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity. -v: status per stage. -vv: per-package HTTP calls (loud).",
+    )
+    scan.add_argument(
+        "-q", "--quiet", action="store_true", help="Suppress status lines; only print the summary."
+    )
 
     ci = sub.add_parser("ci", help="CI mode — emit SARIF for GitHub code scanning.")
     ci.add_argument("--fail-on", default="high", choices=[s.value for s in Severity])
@@ -255,9 +311,34 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_logging(verbose: int) -> None:
+    # 0 = warnings only, 1 = info from sureguard, 2 = debug from sureguard + per-request httpx
+    if verbose >= 2:
+        level = logging.DEBUG
+    elif verbose >= 1:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format=f"  {_color('dim')}[%(name)s]{_color('reset')} %(message)s",
+        stream=sys.stderr,
+    )
+    # Libraries that produce a firehose at DEBUG — clamp them regardless of -v.
+    # httpcore in particular dumps every TLS handshake step *with full response headers*.
+    for noisy in ("httpcore", "httpcore.http11", "httpcore.connection", "asyncio", "anyio"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    # httpx is the friendly one — one line per request at INFO. Allow it at -vv only.
+    if verbose >= 2:
+        logging.getLogger("httpx").setLevel(logging.INFO)
+    else:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _configure_logging(getattr(args, "verbose", 0))
     if args.cmd == "scan":
         return asyncio.run(_run_scan(args))
     if args.cmd == "ci":

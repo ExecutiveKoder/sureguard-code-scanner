@@ -7,9 +7,13 @@ as a hard fail in default policy.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from ..cache import Cache, default_cache
+
+log = logging.getLogger("sureguard.kev")
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 _TTL_SECONDS = 3600  # 1h — KEV updates are rare but always worth picking up fast
@@ -29,12 +33,15 @@ class KEVCatalog:
             return self._cves
         cached = self.cache.get("kev", "catalog")
         if cached is not None:
+            log.debug("KEV catalog served from cache (%d CVEs)", len(cached))
             self._cves = set(cached)
             return self._cves
+        log.info("fetching CISA KEV catalog from %s", KEV_URL)
         resp = await self.http.get(KEV_URL)
         resp.raise_for_status()
         data = resp.json()
         cves = {v["cveID"] for v in data.get("vulnerabilities", [])}
+        log.info("KEV catalog fetched: %d actively-exploited CVEs", len(cves))
         self.cache.set("kev", "catalog", sorted(cves), _TTL_SECONDS)
         self._cves = cves
         return cves

@@ -11,10 +11,14 @@ but isn't that package, flag it.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 
 from ..cache import Cache, default_cache
 from ..models import Ecosystem, PackageRef, PackageVerification
+
+log = logging.getLogger("sureguard.registry")
 
 _REGISTRY_TTL = 6 * 3600
 
@@ -87,10 +91,12 @@ class RegistryClient:
     async def verify(self, pkg: PackageRef) -> PackageVerification:
         cached = self.cache.get("registry", f"{pkg.ecosystem.value}|{pkg.name}")
         if cached is not None:
+            log.debug("registry cache hit: %s/%s", pkg.ecosystem.value, pkg.name)
             base = PackageVerification.model_validate(cached)
             base.package = pkg
             return base
 
+        log.info("verifying %s/%s against registry", pkg.ecosystem.value, pkg.name)
         if pkg.ecosystem == Ecosystem.PYPI:
             v = await self._verify_pypi(pkg)
         elif pkg.ecosystem == Ecosystem.NPM:

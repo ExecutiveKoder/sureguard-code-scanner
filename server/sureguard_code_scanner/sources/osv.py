@@ -8,12 +8,15 @@ scan_dependencies fast on large manifests.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from ..cache import Cache, default_cache
 from ..models import Ecosystem, PackageRef
+
+log = logging.getLogger("sureguard.osv")
 
 OSV_API = "https://api.osv.dev"
 _TTL_SECONDS = 24 * 3600  # OSV updates daily-ish
@@ -56,12 +59,20 @@ class OSVClient:
             else:
                 uncached.append(pkg)
 
-        if not uncached:
+        if uncached:
+            log.info(
+                "OSV: %d cached, %d to query in batches of up to 1000",
+                len(packages) - len(uncached),
+                len(uncached),
+            )
+        else:
+            log.debug("OSV: all %d packages served from cache", len(packages))
             return results
 
         # OSV's batched endpoint takes up to 1000 queries per call.
         for chunk_start in range(0, len(uncached), 1000):
             chunk = uncached[chunk_start : chunk_start + 1000]
+            log.info("OSV: posting batch of %d queries to %s/v1/querybatch", len(chunk), OSV_API)
             body = {
                 "queries": [
                     {
