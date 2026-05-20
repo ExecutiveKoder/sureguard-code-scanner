@@ -1,4 +1,4 @@
-"""Entrypoint: `python -m sureguard_mcp` or the `sureguard-mcp` script."""
+"""Entrypoint: `python -m sureguard_code_scanner` or the `sureguard-code-scanner` script."""
 
 from .server import main
 

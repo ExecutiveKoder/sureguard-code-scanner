@@ -1,5 +1,5 @@
-from sureguard_mcp.models import Ecosystem
-from sureguard_mcp.sources.registries import typosquat_candidates
+from sureguard_code_scanner.models import Ecosystem
+from sureguard_code_scanner.sources.registries import typosquat_candidates
 
 
 def test_requestz_flags_requests():

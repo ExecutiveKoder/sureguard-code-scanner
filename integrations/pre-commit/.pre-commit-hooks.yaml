@@ -1,7 +1,7 @@
 - id: sureguard-diff
   name: Sureguard (diff scan)
   description: AI-aware secure code review over the diff being committed.
-  entry: sureguard-mcp-precommit
+  entry: sureguard-code-scanner-precommit
   language: python
   pass_filenames: false
   stages: [commit, manual]
@@ -9,7 +9,7 @@
 - id: sureguard-deps
   name: Sureguard (dependency scan)
   description: SCA + hallucination check across manifest files.
-  entry: python -m sureguard_mcp.cli ci --manifest
+  entry: python -m sureguard_code_scanner.cli ci --manifest
   language: python
   files: ^(requirements\.txt|package\.json|package-lock\.json|pyproject\.toml)$
   pass_filenames: true

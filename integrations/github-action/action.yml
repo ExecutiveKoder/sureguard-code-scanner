@@ -30,7 +30,7 @@ runs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        pip install sureguard-mcp semgrep gitleaks
+        pip install sureguard-code-scanner semgrep gitleaks
 
     - name: Run Sureguard
       shell: bash
@@ -41,7 +41,7 @@ runs:
         SARIF_OUTPUT: ${{ inputs.sarif-output }}
         BASE_REF: ${{ github.event.pull_request.base.sha }}
       run: |
-        python -m sureguard_mcp.cli ci \
+        python -m sureguard_code_scanner.cli ci \
           --fail-on "$FAIL_ON" \
           ${MANIFEST:+--manifest "$MANIFEST"} \
           ${SCAN_DIFF:+--scan-diff} \

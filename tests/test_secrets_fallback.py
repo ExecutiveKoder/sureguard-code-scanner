@@ -1,4 +1,4 @@
-from sureguard_mcp.engines.gitleaks import fallback_scan_text
+from sureguard_code_scanner.engines.gitleaks import fallback_scan_text
 
 
 def test_aws_access_key_detected():

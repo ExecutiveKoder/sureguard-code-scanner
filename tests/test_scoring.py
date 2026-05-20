@@ -1,5 +1,5 @@
-from sureguard_mcp.models import Severity
-from sureguard_mcp.scoring import combined_risk_score, severity_from_score
+from sureguard_code_scanner.models import Severity
+from sureguard_code_scanner.scoring import combined_risk_score, severity_from_score
 
 
 def test_kev_alone_floors_score():

@@ -1,9 +1,9 @@
-from sureguard_mcp.manifests import (
+from sureguard_code_scanner.manifests import (
     parse_package_json,
     parse_pyproject_toml,
     parse_requirements_txt,
 )
-from sureguard_mcp.models import Ecosystem
+from sureguard_code_scanner.models import Ecosystem
 
 
 def test_requirements_txt_basic():

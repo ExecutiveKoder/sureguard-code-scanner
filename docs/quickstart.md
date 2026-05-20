@@ -16,7 +16,7 @@ This is the AI-reviewer integration. Your agent calls Sureguard's tools mid-gene
   "mcpServers": {
     "sureguard": {
       "command": "uvx",
-      "args": ["sureguard-mcp"]
+      "args": ["sureguard-code-scanner"]
     }
   }
 }
@@ -53,7 +53,7 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - uses: sureguard/sureguard-action@v0
+      - uses: ExecutiveKoder/sureguard-code-scanner/integrations/github-action@main
         with:
           manifest: requirements.txt
           fail-on: high
@@ -68,7 +68,7 @@ jobs:
 ```yaml
 # .pre-commit-config.yaml
 repos:
-  - repo: https://github.com/sureguard/sureguard
+  - repo: https://github.com/ExecutiveKoder/sureguard-code-scanner
     rev: v0.1.0
     hooks:
       - id: sureguard-diff

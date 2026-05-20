@@ -3,7 +3,7 @@
   "mcpServers": {
     "sureguard": {
       "command": "uvx",
-      "args": ["sureguard-mcp"]
+      "args": ["sureguard-code-scanner"]
     }
   }
 }

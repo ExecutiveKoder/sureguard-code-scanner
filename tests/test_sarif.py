@@ -1,5 +1,5 @@
-from sureguard_mcp.models import Finding, Location, Severity
-from sureguard_mcp.sarif import findings_to_sarif
+from sureguard_code_scanner.models import Finding, Location, Severity
+from sureguard_code_scanner.sarif import findings_to_sarif
 
 
 def test_sarif_shape_and_rule_dedup():

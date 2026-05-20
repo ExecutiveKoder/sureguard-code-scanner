@@ -85,7 +85,7 @@ def findings_to_sarif(findings: list[Finding], tool_run_name: str = "sureguard")
                     "driver": {
                         "name": tool_run_name,
                         "version": __version__,
-                        "informationUri": "https://github.com/sureguard/sureguard",
+                        "informationUri": "https://github.com/ExecutiveKoder/sureguard-code-scanner",
                         "rules": list(rules.values()),
                     }
                 },

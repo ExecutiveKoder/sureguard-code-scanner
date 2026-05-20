@@ -1,6 +1,6 @@
 """Thin CLI used by the GitHub Action and pre-commit hook (Pattern A).
 
-The MCP server (`sureguard-mcp`) is the primary surface. This CLI calls the
+The MCP server (`sureguard-code-scanner`) is the primary surface. This CLI calls the
 same tool functions directly so CI doesn't need an MCP client.
 """
 
