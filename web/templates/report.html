@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}Sureguard report — {{ report.target_url }}{% endblock %}
+
+{% set grade_class = "grade-" ~ report.grade %}
+
+{% block content %}
+<section class="mb-6">
+  <p class="text-sm text-slate-500 mono">{{ report.target_url }}</p>
+  <h1 class="text-3xl font-bold tracking-tight mt-1">Security report</h1>
+</section>
+
+<section class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-6">
+  <div class="flex items-baseline justify-between gap-6 flex-wrap">
+    <div>
+      <div class="text-sm uppercase tracking-wider text-slate-500">Sureguard Score</div>
+      <div class="text-6xl font-bold mt-1 {{ grade_class }}">
+        {{ report.score }}<span class="text-3xl text-slate-400">/100</span>
+      </div>
+      <div class="text-2xl font-bold mt-1 {{ grade_class }}">Grade {{ report.grade }}</div>
+    </div>
+    <div class="text-sm space-y-1">
+      {% for sev, n in report.severity_counts.items() %}
+        {% if n > 0 %}
+        <div class="flex items-center gap-2">
+          <span class="inline-block w-20 text-center text-xs uppercase font-semibold px-2 py-0.5 rounded sev-{{ sev }}">{{ sev }}</span>
+          <span class="font-medium">{{ n }}</span>
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% if report.category_counts %}
+    <div class="mt-5 pt-5 border-t border-slate-100 text-sm text-slate-600">
+      <span class="font-medium text-slate-700">By category:</span>
+      {% for cat, n in report.category_counts.items() %}
+        <span class="ml-3"><strong>{{ n }}</strong> {{ cat.replace('-', ' ') }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
+{% if report.actions %}
+<section class="mb-6">
+  <h2 class="text-xl font-bold mb-1">Next actions <span class="text-sm font-normal text-slate-500">(fix in this order)</span></h2>
+  <p class="text-sm text-slate-600 mb-4">{{ report.actions|length }} action{{ '' if report.actions|length == 1 else 's' }} resolve all {{ report.findings|length }} findings.</p>
+
+  <ol class="space-y-3">
+    {% for action in report.actions %}
+      {% set kind_color = {
+        'code': 'bg-red-100 text-red-700',
+        'secret': 'bg-red-100 text-red-700',
+        'hallucinated': 'bg-red-100 text-red-700',
+        'upgrade': 'bg-blue-100 text-blue-700',
+      } %}
+      {% set kind_label = {
+        'code': 'CODE',
+        'secret': 'SECRET',
+        'hallucinated': 'PACKAGE?',
+        'upgrade': 'UPGRADE',
+      } %}
+      <li class="bg-white rounded-lg border border-slate-200 p-4 flex gap-4 items-start">
+        <div class="text-sm font-bold text-slate-400 w-6 text-right pt-0.5">{{ loop.index }}.</div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap mb-1">
+            <span class="text-xs font-semibold px-2 py-0.5 rounded {{ kind_color[action.kind] }}">
+              {{ kind_label[action.kind] }}
+            </span>
+            <span class="text-xs font-semibold px-2 py-0.5 rounded sev-{{ action.severity.value }}">{{ action.severity.value }}</span>
+            <span class="font-medium text-slate-900">{{ action.title }}</span>
+          </div>
+          <p class="text-sm text-slate-600">{{ action.detail }}</p>
+          {% if action.install_command %}
+            <pre class="mono text-xs bg-slate-900 text-slate-100 rounded-md px-3 py-2 mt-2 overflow-x-auto">{{ action.install_command }}</pre>
+          {% endif %}
+        </div>
+      </li>
+    {% endfor %}
+  </ol>
+</section>
+
+{% set pypi_upgrades = report.actions | selectattr('kind', 'equalto', 'upgrade') | selectattr('ecosystem', 'equalto', 'pypi') | list %}
+{% set npm_upgrades  = report.actions | selectattr('kind', 'equalto', 'upgrade') | selectattr('ecosystem', 'equalto', 'npm')  | list %}
+{% if pypi_upgrades or npm_upgrades %}
+<section class="mb-6">
+  <h2 class="text-xl font-bold mb-3">Copy-paste install commands</h2>
+  <div class="space-y-3">
+    {% if pypi_upgrades %}
+    <div>
+      <div class="text-xs text-slate-500 mono mb-1"># Python</div>
+      <pre class="mono text-sm bg-slate-900 text-slate-100 rounded-md px-3 py-3 overflow-x-auto">pip install -U {% for a in pypi_upgrades %}"{{ a.package }}>={{ a.target_version }}"{% if not loop.last %} {% endif %}{% endfor %}</pre>
+    </div>
+    {% endif %}
+    {% if npm_upgrades %}
+    <div>
+      <div class="text-xs text-slate-500 mono mb-1"># Node</div>
+      <pre class="mono text-sm bg-slate-900 text-slate-100 rounded-md px-3 py-3 overflow-x-auto">npm install {% for a in npm_upgrades %}{{ a.package }}@^{{ a.target_version }}{% if not loop.last %} {% endif %}{% endfor %}</pre>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{% else %}
+<section class="bg-white rounded-xl border border-slate-200 p-10 text-center mb-6">
+  <div class="text-5xl mb-2">✓</div>
+  <h2 class="text-xl font-bold">No findings</h2>
+  <p class="text-slate-600 mt-1">Nothing Sureguard catches matches this repo. Nice.</p>
+</section>
+{% endif %}
+
+{% if report.warnings %}
+<section class="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-900 mb-6">
+  {% for w in report.warnings %}
+    <div class="flex gap-2"><span class="font-bold">note</span><span>{{ w }}</span></div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<div class="text-xs text-slate-500 text-right mono">
+  scanned in {{ "%.1f"|format(report.elapsed_ms / 1000) }}s · {{ report.findings|length }} finding{{ '' if report.findings|length == 1 else 's' }}
+</div>
+
+<div class="mt-8 text-center">
+  <a href="/" class="text-sm text-blue-600 hover:text-blue-800">← Scan another repo</a>
+</div>
+{% endblock %}

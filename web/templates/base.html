@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Sureguard — AI-aware code security scanner{% endblock %}</title>
+  <meta name="description" content="Paste a GitHub URL and Sureguard scans it for hallucinated packages, insecure patterns, secrets, and known CVEs — the failure modes AI-generated code actually exhibits.">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .grade-A { color: #059669; }     /* emerald-600 */
+    .grade-B { color: #2563eb; }     /* blue-600   */
+    .grade-C { color: #d97706; }     /* amber-600  */
+    .grade-D { color: #ea580c; }     /* orange-600 */
+    .grade-F { color: #dc2626; }     /* red-600    */
+    .sev-critical { background: #7f1d1d; color: white; }
+    .sev-high     { background: #dc2626; color: white; }
+    .sev-medium   { background: #f59e0b; color: white; }
+    .sev-low      { background: #2563eb; color: white; }
+    .sev-info     { background: #9ca3af; color: white; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <header class="border-b border-slate-200 bg-white">
+    <div class="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2 text-slate-900 hover:text-slate-700">
+        <span class="text-xl font-bold tracking-tight">Sureguard</span>
+        <span class="text-xs uppercase tracking-wider text-slate-500">code scanner</span>
+      </a>
+      <a href="https://github.com/ExecutiveKoder/sureguard-code-scanner"
+         class="text-sm text-slate-600 hover:text-slate-900">GitHub →</a>
+    </div>
+  </header>
+  <main class="max-w-4xl mx-auto px-6 py-10">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="max-w-4xl mx-auto px-6 py-10 text-xs text-slate-500">
+    Apache-2.0 · catches n-days, not zero-days · scans run locally on this server and the cloned repo is deleted after.
+  </footer>
+</body>
+</html>

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="text-center mb-10">
+  <h1 class="text-4xl font-bold tracking-tight mb-3">
+    AI-aware security review for any GitHub repo
+  </h1>
+  <p class="text-slate-600 max-w-2xl mx-auto">
+    Paste a public GitHub URL. Sureguard scans for hallucinated packages, insecure patterns,
+    secrets, and known CVEs — the failure modes AI-generated code actually exhibits.
+  </p>
+</section>
+
+<form method="post" action="/scan" class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+  <label for="url" class="block text-sm font-medium text-slate-700 mb-2">GitHub URL</label>
+  <div class="flex gap-3">
+    <input
+      type="url"
+      name="url"
+      id="url"
+      required
+      placeholder="https://github.com/owner/repo"
+      value="{{ submitted_url or '' }}"
+      class="mono flex-1 px-4 py-3 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+    >
+    <button
+      type="submit"
+      class="px-5 py-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium"
+      onclick="this.disabled=true; this.innerText='Scanning…'; this.form.submit();"
+    >
+      Scan
+    </button>
+  </div>
+  {% if error %}
+    <p class="mt-3 text-sm text-red-600">{{ error }}</p>
+  {% endif %}
+  <p class="mt-3 text-xs text-slate-500">
+    Public repos only. Typical scan finishes in 5-30s. Large repos and tokens are not accepted.
+  </p>
+</form>
+
+<section class="mt-12 grid sm:grid-cols-2 gap-6">
+  <div class="bg-white rounded-xl border border-slate-200 p-5">
+    <h3 class="font-semibold mb-2">What it catches</h3>
+    <ul class="text-sm text-slate-600 space-y-1">
+      <li>• Hallucinated / slopsquatted packages</li>
+      <li>• <span class="mono">verify=False</span>, MD5, <span class="mono">eval()</span>, JWT <span class="mono">alg=none</span></li>
+      <li>• Hardcoded secrets &amp; high-entropy literals</li>
+      <li>• Known CVEs cross-referenced vs. CISA KEV + EPSS</li>
+    </ul>
+  </div>
+  <div class="bg-white rounded-xl border border-slate-200 p-5">
+    <h3 class="font-semibold mb-2">What it doesn't do</h3>
+    <ul class="text-sm text-slate-600 space-y-1">
+      <li>• It is <strong>not</strong> a zero-day detector — those are by definition unknown.</li>
+      <li>• It does not replace your existing SAST/SCA — it's the AI-generation-aware layer.</li>
+      <li>• It does not store your code. The clone is deleted after scanning.</li>
+    </ul>
+  </div>
+</section>
+{% endblock %}

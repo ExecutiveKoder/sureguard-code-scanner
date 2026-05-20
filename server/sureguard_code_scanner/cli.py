@@ -16,15 +16,12 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
-from packaging.version import InvalidVersion, Version
-
+from .actions import Action, build_action_plan, project_score
 from .engines.gitleaks import GitleaksNotInstalled, run_gitleaks
 from .engines.semgrep import SemgrepNotInstalled, run_semgrep
 from .models import Finding, Location, Severity
@@ -90,32 +87,6 @@ def _fmt_sev(sev: Severity) -> str:
     return f"{_color(weight)}{_color(color)}{sev.value.upper():<8}{_color('reset')}"
 
 
-_SCORE_WEIGHTS = {
-    Severity.CRITICAL: 15.0,
-    Severity.HIGH: 3.0,
-    Severity.MEDIUM: 1.0,
-    Severity.LOW: 0.3,
-    Severity.INFO: 0.05,
-}
-
-
-def _project_score(counts: dict[Severity, int]) -> tuple[int, str]:
-    """Return (score 0-100, letter grade). Start at 100, deduct per finding by severity."""
-    penalty = sum(counts.get(sev, 0) * weight for sev, weight in _SCORE_WEIGHTS.items())
-    score = max(0, int(round(100 - penalty)))
-    if score >= 90:
-        grade = "A"
-    elif score >= 80:
-        grade = "B"
-    elif score >= 70:
-        grade = "C"
-    elif score >= 60:
-        grade = "D"
-    else:
-        grade = "F"
-    return score, grade
-
-
 def _grade_color(grade: str) -> str:
     return {"A": "blue", "B": "blue", "C": "yellow", "D": "yellow", "F": "red"}.get(grade, "reset")
 
@@ -132,174 +103,7 @@ _CATEGORY_LABELS = {
 }
 
 
-@dataclass
-class Action:
-    """One row in the action plan."""
-
-    kind: str  # "code" | "secret" | "hallucinated" | "upgrade"
-    title: str
-    detail: str
-    severity: Severity
-    finding_count: int
-    install_command: str | None = None  # e.g. 'pip install -U "requests>=2.32.4"'
-    ecosystem: str | None = None
-    package: str | None = None
-    target_version: str | None = None
-
-
-# Capture: "Upgrade <package> to >= <version>." (the format scan_dependencies emits)
-_FIX_RE = re.compile(r"Upgrade\s+(\S+?)\s+to\s+>=\s+([0-9A-Za-z._\-+]+?)\.?\s*$")
-
-
-def _safe_version(s: str) -> Version | None:
-    try:
-        return Version(s)
-    except InvalidVersion:
-        return None
-
-
-def _rel(path: str | None, root: Path | None) -> str:
-    """Best-effort relativize a path against the scan root for display."""
-    if not path:
-        return "(unknown)"
-    if root is None:
-        return path
-    try:
-        return str(Path(path).resolve().relative_to(root.resolve()))
-    except (ValueError, OSError):
-        return path
-
-
-def _build_action_plan(findings: list[Finding], target: Path | None = None) -> list[Action]:
-    """Collapse 100s of findings into the handful of moves that resolve them."""
-    actions: list[Action] = []
-
-    # --- SAST findings: group by file, one action per file ---
-    sast_by_file: dict[str, list[Finding]] = {}
-    for f in findings:
-        if f.category != "insecure-pattern":
-            continue
-        path = _rel(f.location.path if f.location else None, target)
-        sast_by_file.setdefault(path, []).append(f)
-    for path, fs in sorted(sast_by_file.items(), key=lambda kv: -len(kv[1])):
-        top = max(fs, key=lambda f: _SEV_ORDER.index(f.severity))
-        line_suffix = f":{top.location.line}" if top.location and top.location.line else ""
-        detail = top.fix or top.title
-        actions.append(
-            Action(
-                kind="code",
-                title=f"Fix insecure pattern in {path}{line_suffix}",
-                detail=(detail.split('\n', 1)[0][:160] if detail else top.title),
-                severity=top.severity,
-                finding_count=len(fs),
-            )
-        )
-
-    # --- Secrets: one action per file ---
-    secrets_by_file: dict[str, list[Finding]] = {}
-    for f in findings:
-        if f.category != "secret":
-            continue
-        path = _rel(f.location.path if f.location else None, target)
-        secrets_by_file.setdefault(path, []).append(f)
-    for path, fs in secrets_by_file.items():
-        actions.append(
-            Action(
-                kind="secret",
-                title=f"Rotate hardcoded secret in {path}",
-                detail="Treat as compromised. Rotate the credential, then move it to a secrets manager / env var.",
-                severity=Severity.HIGH,
-                finding_count=len(fs),
-            )
-        )
-
-    # --- Hallucinated packages: one action per package ---
-    for f in findings:
-        if f.category != "hallucinated-package":
-            continue
-        actions.append(
-            Action(
-                kind="hallucinated",
-                title=f.title,
-                detail=f.fix or "Verify this package name actually exists in the registry; remove if not.",
-                severity=f.severity,
-                finding_count=1,
-            )
-        )
-
-    # --- CVE findings: group by (ecosystem, package), take max recommended fix version ---
-    @dataclass
-    class _Bucket:
-        package: str
-        ecosystem: str
-        fix_versions: list[Version] = field(default_factory=list)
-        findings: list[Finding] = field(default_factory=list)
-        titles: list[str] = field(default_factory=list)
-
-    buckets: dict[tuple[str, str], _Bucket] = {}
-    for f in findings:
-        if f.category != "vulnerability":
-            continue
-        if not f.fix:
-            continue
-        m = _FIX_RE.search(f.fix)
-        if not m:
-            continue
-        pkg, fix_ver_str = m.group(1), m.group(2)
-        # Ecosystem is implicit in the manifest path. Cheap heuristic from extension.
-        path = (f.location.path if f.location else "") or ""
-        if path.endswith(".txt") or path.endswith("pyproject.toml"):
-            ecosystem = "pypi"
-        elif path.endswith(".json"):
-            ecosystem = "npm"
-        else:
-            ecosystem = "unknown"
-        key = (ecosystem, pkg)
-        bucket = buckets.setdefault(key, _Bucket(package=pkg, ecosystem=ecosystem))
-        v = _safe_version(fix_ver_str)
-        if v is not None:
-            bucket.fix_versions.append(v)
-        bucket.findings.append(f)
-        bucket.titles.append(f.title)
-
-    for (ecosystem, pkg), bucket in buckets.items():
-        if not bucket.fix_versions:
-            continue
-        target_v = max(bucket.fix_versions)
-        # The package's most severe finding drives the action's severity.
-        worst = max(bucket.findings, key=lambda f: _SEV_ORDER.index(f.severity))
-        if ecosystem == "pypi":
-            install = f'pip install -U "{pkg}>={target_v}"'
-        elif ecosystem == "npm":
-            install = f'npm install {pkg}@^{target_v}'
-        else:
-            install = None
-        # Two-line detail: what gets fixed, what severity tier.
-        sev_summary = []
-        for sev in reversed(_SEV_ORDER):
-            n = sum(1 for f in bucket.findings if f.severity == sev)
-            if n:
-                sev_summary.append(f"{n} {sev.value}")
-        sample = bucket.titles[0]
-        # Strip "<ID> in <pkg>@<ver>" prefix from titles for the detail line.
-        sample = re.sub(r"^[A-Z\-]+\d[\w\-]*\s+in\s+", "", sample)
-        actions.append(
-            Action(
-                kind="upgrade",
-                title=f"Upgrade {pkg} → {target_v}",
-                detail=f"clears {len(bucket.findings)} CVE(s) ({', '.join(sev_summary)}) — e.g. {sample[:80]}",
-                severity=worst.severity,
-                finding_count=len(bucket.findings),
-                install_command=install,
-                ecosystem=ecosystem,
-                package=pkg,
-                target_version=str(target_v),
-            )
-        )
-
-    # Sort by severity desc, then by how many findings the action clears desc.
-    actions.sort(key=lambda a: (-_SEV_ORDER.index(a.severity), -a.finding_count))
-    return actions
+# Action / build_action_plan / project_score live in actions.py — see imports at top of file.
 
 
 _KIND_LABEL = {
@@ -359,7 +163,7 @@ def _print_summary(
         counts[f.severity] += 1
         cat_counts[f.category] = cat_counts.get(f.category, 0) + 1
 
-    score, grade = _project_score(counts)
+    score, grade = project_score(counts)
 
     print()
     print(f"{_color('bold')}Sureguard scan{_color('reset')}  {_color('dim')}{target}{_color('reset')}")
@@ -395,7 +199,7 @@ def _print_summary(
                 print(f"    {n:>4}  {label}")
 
         # Action plan — what to actually do, in priority order.
-        actions = _build_action_plan(findings, target=target)
+        actions = build_action_plan(findings, target=target)
         if actions:
             _print_action_plan(actions)
 

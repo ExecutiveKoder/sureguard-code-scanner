@@ -21,6 +21,7 @@ Sureguard plugs in at four points along the AI-coding lifecycle. Pick the ones t
 | When | What plugs in | What it catches |
 | --- | --- | --- |
 | **At generation time** (inside the agent) | Claude Code / Cursor / Continue calling Sureguard via MCP | Hallucinated packages, insecure patterns, secrets — *before* code is written to disk |
+| **One-off demo** (paste a URL) | The hosted web UI in [`web/`](web/) | Same scan, runs against any public GitHub repo. Good for "try it before installing." |
 | **On pre-commit** (local) | `pre-commit` hook | The same checks against the staged diff, as a last guard before commit |
 | **On PR open** (CI) | GitHub Action | Full SCA + SAST + secrets scan, gates the PR, posts to GitHub code scanning |
 | **Post-deploy** (monitoring) | Scheduled job calling `check_runtime_risk` against your deployed SBOM | New CVE disclosures against shipped versions, prioritized by KEV+EPSS |
