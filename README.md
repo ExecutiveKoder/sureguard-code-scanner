@@ -42,6 +42,45 @@ pip install semgrep      # needed for scan_code / scan_diff
 brew install gitleaks    # better recall on scan_secrets; built-in fallback works too
 ```
 
+### 0. Scan a local directory (the simplest on-ramp)
+
+Just point it at a folder and read the summary:
+
+```bash
+sureguard scan path/to/your/project
+```
+
+```
+Sureguard scan  /path/to/your/project
+────────────────────────────────────────────────────────────────────────
+  1 critical   3 high   1 low   2 info
+
+  CRITICAL requirements.txt
+           Package 'hallucinated-pkg' does not exist in pypi
+           ↳ Verify the intended package name. AI agents frequently invent…
+  HIGH     src/api.py:9
+           TLS verification disabled
+           ↳ Remove `verify=False`. If the cert is bad, fix the cert.
+  HIGH     src/api.py:11
+           JWT signature verification disabled
+           ↳ jwt.decode(token, key, algorithms=["RS256"])
+  …
+
+7 finding(s) in 1154 ms
+```
+
+Runs SAST + secrets + manifest SCA against a single directory, fully local. Useful flags:
+
+```bash
+sureguard scan ./ --no-sast            # skip Semgrep (faster, deps + secrets only)
+sureguard scan ./ --no-deps            # only SAST + secrets
+sureguard scan ./ --json               # machine-readable output
+sureguard scan ./ --sarif out.sarif    # write SARIF alongside the summary
+sureguard scan ./ --fail-on medium     # exit nonzero on anything ≥ medium (default: high)
+```
+
+Exit code is `0` if nothing meets `--fail-on`, `1` otherwise — drop it into any shell pipeline or Makefile.
+
 ### 1. Plug into your AI coding agent (the high-leverage path)
 
 #### Claude Code

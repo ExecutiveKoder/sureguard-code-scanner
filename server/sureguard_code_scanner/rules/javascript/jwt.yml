@@ -1,9 +1,9 @@
 rules:
   - id: sureguard.javascript.jwt-alg-none
     pattern-either:
-      - pattern: jwt.verify($T, $K, {algorithms: ["none"]})
-      - pattern: jwt.verify($T, $K, {algorithms: ['none']})
-      - pattern: jwt.decode($T, {complete: true, ...})
+      - pattern: 'jwt.verify($T, $K, {algorithms: ["none"]})'
+      - pattern: "jwt.verify($T, $K, {algorithms: ['none']})"
+      - pattern: 'jwt.decode($T, {complete: true, ...})'
     message: |
       JWT alg=none accepted, or jwt.decode used without signature verification.
       Always use jwt.verify with an explicit algorithm allowlist.

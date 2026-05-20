@@ -4,7 +4,7 @@ rules:
       - pattern: jwt.decode(..., algorithms=["none"], ...)
       - pattern: jwt.decode(..., algorithms=["None"], ...)
       - pattern: jwt.decode(..., verify=False, ...)
-      - pattern: jwt.decode(..., options={"verify_signature": False, ...}, ...)
+      - pattern: 'jwt.decode(..., options={"verify_signature": False, ...}, ...)'
     message: |
       JWT signature verification is disabled. The token is being trusted
       blind — anyone can mint one. Pin the expected algorithm explicitly.

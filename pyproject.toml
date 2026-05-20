@@ -37,6 +37,7 @@ dev = [
 
 [project.scripts]
 sureguard-code-scanner = "sureguard_code_scanner.__main__:main"
+sureguard = "sureguard_code_scanner.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ExecutiveKoder/sureguard-code-scanner"
@@ -44,9 +45,6 @@ Issues = "https://github.com/ExecutiveKoder/sureguard-code-scanner/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["server/sureguard_code_scanner"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"rules" = "sureguard_code_scanner/rules"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

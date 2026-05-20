@@ -18,8 +18,8 @@ rules:
 
   - id: sureguard.javascript.axios-https-agent-no-verify
     pattern-either:
-      - pattern: new https.Agent({rejectUnauthorized: false, ...})
-      - pattern: new https.Agent({rejectUnauthorized: false})
+      - pattern: 'new https.Agent({rejectUnauthorized: false, ...})'
+      - pattern: 'new https.Agent({rejectUnauthorized: false})'
     message: TLS certificate verification disabled on https.Agent.
     languages: [javascript, typescript]
     severity: ERROR
