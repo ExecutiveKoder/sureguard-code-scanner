@@ -21,24 +21,94 @@ class GitleaksNotInstalled(RuntimeError):
     pass
 
 
-# File-name patterns whose secret findings are excluded by default. Local .env
-# files are conventionally gitignored and hold per-machine config; their mere
-# presence on disk isn't a leak. If someone actually commits an .env file, the
-# correct fix is "stop committing it," not "rotate every value gitleaks scraped
-# out of it" — so by default we don't drown the action plan with one finding
-# per environment variable. Set `include_env_secrets=True` (CLI flag
-# `--include-env-secrets`) to re-include them.
+# Each of these path-pattern groups represents a category of file where a
+# gitleaks hit is *usually* a false positive. By default we filter them out so
+# the score and the action plan reflect real risk. Opt-back-in flags exist on
+# the CLI for users who need exhaustive scanning (audits, leak hunts).
+#
+#   .env*        : local-only environment files; if committed at all, the fix
+#                  is "stop committing it," not "rotate every value here."
+#   docs         : tutorial files routinely contain example tokens like
+#                  "Bearer eyJ..." that gitleaks can't tell apart from real keys.
+#   tests        : fixtures and unit tests use throwaway tokens by design.
+#   IDE config   : .claude/, .vscode/, .idea/ — editor settings, sometimes
+#                  contain local API keys but never get pushed to prod.
+
 _ENV_PATH_PATTERNS = (
-    re.compile(r"(^|/)\.env(\..+)?$"),  # .env, .env.local, .env.bak, .env.production, .env.foo
+    re.compile(r"(^|/)\.env(\..+)?$"),  # .env, .env.local, .env.bak, .env.production
     re.compile(r"(^|/)\.env-[^/]+$"),  # .env-staging, .env-prod
+)
+
+_DOC_PATH_PATTERNS = (
+    re.compile(r"\.(md|mdx|markdown|rst|adoc|txt)$", re.IGNORECASE),
+)
+
+_TEST_PATH_PATTERNS = (
+    re.compile(r"(^|/)tests?(/|$)"),
+    re.compile(r"(^|/)TestCases(/|$)"),
+    re.compile(r"(^|/)__tests__(/|$)"),
+    re.compile(r"(^|/)fixtures?(/|$)"),
+    re.compile(r"(^|/)spec(/|$)"),
+    re.compile(r"(^|/)test_[^/]+\.[a-zA-Z]+$"),  # test_*.py, test_*.go
+    re.compile(r"(^|/)[^/]+_test\.[a-zA-Z]+$"),  # *_test.py, *_test.go
+    re.compile(r"(^|/)[^/]+\.test\.[a-zA-Z]+$"),  # *.test.js, *.test.ts
+    re.compile(r"(^|/)[^/]+\.spec\.[a-zA-Z]+$"),  # *.spec.js, *.spec.ts
+)
+
+_IDE_PATH_PATTERNS = (
+    re.compile(r"(^|/)\.claude(/|$)"),
+    re.compile(r"(^|/)\.vscode(/|$)"),
+    re.compile(r"(^|/)\.idea(/|$)"),
+    re.compile(r"(^|/)\.cursor(/|$)"),
 )
 
 
 def is_env_file_path(path: str | None) -> bool:
-    """True if the path looks like a `.env*` file we exclude from secret scans by default."""
+    """True if the path looks like a `.env*` file."""
     if not path:
         return False
     return any(p.search(path) for p in _ENV_PATH_PATTERNS)
+
+
+def is_doc_file_path(path: str | None) -> bool:
+    """True if the path looks like a documentation file (.md, .rst, etc.)."""
+    if not path:
+        return False
+    return any(p.search(path) for p in _DOC_PATH_PATTERNS)
+
+
+def is_test_file_path(path: str | None) -> bool:
+    """True if the path looks like a test fixture / test file."""
+    if not path:
+        return False
+    return any(p.search(path) for p in _TEST_PATH_PATTERNS)
+
+
+def is_ide_config_path(path: str | None) -> bool:
+    """True if the path lives inside an IDE / editor config directory."""
+    if not path:
+        return False
+    return any(p.search(path) for p in _IDE_PATH_PATTERNS)
+
+
+def should_drop_secret(
+    path: str | None,
+    *,
+    include_env_secrets: bool,
+    include_doc_secrets: bool,
+    include_test_secrets: bool,
+    include_ide_secrets: bool,
+) -> bool:
+    """Single decision point: should this secret finding be dropped as low-signal noise?"""
+    if not include_env_secrets and is_env_file_path(path):
+        return True
+    if not include_doc_secrets and is_doc_file_path(path):
+        return True
+    if not include_test_secrets and is_test_file_path(path):
+        return True
+    if not include_ide_secrets and is_ide_config_path(path):
+        return True
+    return False
 
 
 _FALLBACK_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
@@ -95,6 +165,9 @@ async def run_gitleaks(
     timeout_seconds: int = 60,
     *,
     include_env_secrets: bool = False,
+    include_doc_secrets: bool = False,
+    include_test_secrets: bool = False,
+    include_ide_secrets: bool = False,
 ) -> list[Finding]:
     # Auto-installs on first run if not already on PATH or cached. Returns None
     # only if the platform is unsupported, the download fails, or the user
@@ -145,7 +218,13 @@ async def run_gitleaks(
     findings: list[Finding] = []
     for rec in records or []:
         file_path = rec.get("File")
-        if not include_env_secrets and is_env_file_path(file_path):
+        if should_drop_secret(
+            file_path,
+            include_env_secrets=include_env_secrets,
+            include_doc_secrets=include_doc_secrets,
+            include_test_secrets=include_test_secrets,
+            include_ide_secrets=include_ide_secrets,
+        ):
             continue
         findings.append(
             Finding(

@@ -1,6 +1,6 @@
 # Sureguard Code Scanner
 
-**AI-aware secure code review as an MCP server.**
+**AI-aware secure code review for AI-generated code.**
 
 Vibe-coded code has a different failure profile than human-written code. Sureguard catches the things AI agents actually get wrong:
 
@@ -14,77 +14,170 @@ Sureguard is **not** a zero-day detector — by definition, those are unknown. I
 
 ---
 
-## How to use this
-
-Sureguard plugs in at four points along the AI-coding lifecycle. Pick the ones that match your pipeline — most teams want at least two:
-
-| When | What plugs in | What it catches |
-| --- | --- | --- |
-| **At generation time** (inside the agent) | Claude Code / Cursor / Continue calling Sureguard via MCP | Hallucinated packages, insecure patterns, secrets — *before* code is written to disk |
-| **One-off demo** (paste a URL) | The hosted web UI in [`web/`](web/) | Same scan, runs against any public GitHub repo. Good for "try it before installing." |
-| **On pre-commit** (local) | `pre-commit` hook | The same checks against the staged diff, as a last guard before commit |
-| **On PR open** (CI) | GitHub Action | Full SCA + SAST + secrets scan, gates the PR, posts to GitHub code scanning |
-| **Post-deploy** (monitoring) | Scheduled job calling `check_runtime_risk` against your deployed SBOM | New CVE disclosures against shipped versions, prioritized by KEV+EPSS |
-
-The highest-leverage one is the first row: getting Sureguard into the **agent's** tool loop, so the model never even generates the bad pattern. Reactive scanning is fine; never-emitted is better.
-
-### Install
+## Install
 
 ```bash
-pip install sureguard-code-scanner
-# Or as a one-off (recommended for MCP configs):
-uvx sureguard-code-scanner --help
+git clone https://github.com/ExecutiveKoder/sureguard-code-scanner
+cd sureguard-code-scanner
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+pip install semgrep      # optional, recommended — enables SAST
 ```
 
-Optional but recommended external binaries:
+> **You do NOT need to install gitleaks.** Sureguard fetches a verified gitleaks binary on first run and caches it at `~/.cache/sureguard/bin/`. To opt out, set `SUREGUARD_NO_AUTO_INSTALL=1`.
+
+---
+
+## Quick start
+
+### Scan anything
 
 ```bash
-pip install semgrep      # needed for scan_code / scan_diff
-brew install gitleaks    # better recall on scan_secrets; built-in fallback works too
+# A local directory
+sureguard scan ./my-project
+sureguard scan /Users/me/Code/myapp
+
+# A GitHub URL (clones it shallowly to a temp dir, scans, cleans up)
+sureguard scan https://github.com/owner/repo
+
+# Any other git URL — GitLab, Bitbucket, SSH — also works
+sureguard scan git@github.com:org/private-repo.git
 ```
 
-### 0. Scan a local directory (the simplest on-ramp)
-
-Just point it at a folder and read the summary:
+**For the cleanest output**, add `--actions-only`:
 
 ```bash
-sureguard scan path/to/your/project
+sureguard scan ./my-project --actions-only
 ```
+
+### What you'll see
 
 ```
 Sureguard scan  /path/to/your/project
 ────────────────────────────────────────────────────────────────────────
-  1 critical   3 high   1 low   2 info
+  Sureguard Score: 86 / 100  (B)
+  1 high   17 low   121 info
 
-  CRITICAL requirements.txt
-           Package 'hallucinated-pkg' does not exist in pypi
-           ↳ Verify the intended package name. AI agents frequently invent…
-  HIGH     src/api.py:9
-           TLS verification disabled
-           ↳ Remove `verify=False`. If the cert is bad, fix the cert.
-  HIGH     src/api.py:11
-           JWT signature verification disabled
-           ↳ jwt.decode(token, key, algorithms=["RS256"])
-  …
+  By category:
+     138  Dependency CVEs
+       1  Insecure code patterns
 
-7 finding(s) in 1154 ms
+  Next actions  (fix these in order)
+  ──────────────────────────────────────────────────────────────────────
+   1. CODE     [high] Fix insecure pattern in src/cache.py:96
+       Replace hashlib.md5(...) with hashlib.sha256(...)
+   2. UPGRADE  [low]  Upgrade next → 15.5.16
+       clears 46 CVE(s)
+   3. UPGRADE  [low]  Upgrade axios → 1.15.2
+       clears 35 CVE(s)
+   …
+
+  Copy-paste install commands
+    pip install -U "aiohttp>=3.13.4" "requests>=2.33.0" …
+    npm install next@^15.5.16 axios@^1.15.2 …
 ```
 
-Runs SAST + secrets + manifest SCA against a single directory, fully local. Useful flags:
+---
+
+## Understanding your score
+
+| Score | Grade | Means |
+| --- | --- | --- |
+| 90-100 | **A** | Clean. Anything left is informational. |
+| 80-89  | **B** | Healthy. A small backlog of patches. |
+| 70-79  | **C** | Real items to fix, none on fire. |
+| 60-69  | **D** | Backlog has been ignored too long. |
+| <60    | **F** | Several HIGH findings or a CRITICAL. |
+
+The score starts at 100 and deducts based on severity:
+
+| Severity | Deducts | When you'd see it |
+| --- | --- | --- |
+| CRITICAL | -15 each | Hallucinated package, KEV-listed CVE |
+| HIGH     | -3 each  | MD5 in your code, JWT alg=none, hardcoded API key |
+| MEDIUM   | -1 each  | Weak PRNG for secrets, deprecated TLS |
+| LOW      | -0.3 each| Known CVE in a dep, fixable by upgrade |
+| INFO     | -0.05 each | Disclosed CVE without a strong exploit signal |
+
+### How to improve a low score
+
+Look at the **Next actions** section, not the raw findings list. One package upgrade can clear dozens of findings.
+
+The single highest-leverage move is almost always either:
+1. Fix the one or two HIGHs in your own code, or
+2. Run the two copy-paste install commands at the bottom — they almost always clear the bulk of dep CVEs.
+
+Then re-run `sureguard scan ./` and watch the score move.
+
+---
+
+## When secrets are "everywhere"
+
+Gitleaks is aggressive on file types where example/placeholder tokens are common. By default, Sureguard **filters secret findings in low-signal locations**:
+
+| Filtered by default | Why | Override flag |
+| --- | --- | --- |
+| `.env`, `.env.local`, `.env.bak`, … | Local-only config; their presence isn't a leak | `--include-env-secrets` |
+| `.md`, `.mdx`, `.rst`, `.adoc`, `.txt` | Docs almost always contain example tokens | `--include-doc-secrets` |
+| `test_*.py`, `*_test.go`, `tests/`, `fixtures/`, `__tests__/` | Test fixtures use throwaway tokens | `--include-test-secrets` |
+| `.claude/`, `.vscode/`, `.idea/`, `.cursor/` | IDE config, never deployed | `--include-ide-secrets` |
+
+For audit / leak-hunt mode, use:
 
 ```bash
-sureguard scan ./ --no-sast            # skip Semgrep (faster, deps + secrets only)
-sureguard scan ./ --no-deps            # only SAST + secrets
-sureguard scan ./ --json               # machine-readable output
-sureguard scan ./ --sarif out.sarif    # write SARIF alongside the summary
-sureguard scan ./ --fail-on medium     # exit nonzero on anything ≥ medium (default: high)
+sureguard scan ./ --strict-secrets
 ```
 
-Exit code is `0` if nothing meets `--fail-on`, `1` otherwise — drop it into any shell pipeline or Makefile.
+That includes everything regardless of file type.
 
-### 1. Plug into your AI coding agent (the high-leverage path)
+If `sureguard` flags a real-looking key inside a `.md` or test file and you're not sure if it's a placeholder, **treat it as compromised and rotate** — the cost of rotation is low; the cost of guessing wrong is high.
 
-#### Claude Code
+---
+
+## All the flags
+
+```bash
+sureguard scan <path-or-url>           # the only required argument
+  --fail-on {info,low,medium,high,critical}   # exit nonzero on this or worse (default: high)
+  --no-sast                            # skip Semgrep
+  --no-secrets                         # skip gitleaks entirely
+  --no-deps                            # skip manifest / SCA scan
+  --json                               # raw findings JSON (for piping into other tools)
+  --sarif PATH                         # also write SARIF for GitHub code scanning
+  --top N                              # show top N findings in detail (default: 20)
+  --all                                # show every finding (overrides --top)
+  --actions-only                       # just the action plan, no detail list
+  --include-env-secrets                # include .env* in secret scan
+  --include-doc-secrets                # include .md / .rst / .txt
+  --include-test-secrets               # include test fixtures
+  --include-ide-secrets                # include .claude/, .vscode/, etc.
+  --strict-secrets                     # include ALL of the above
+  -v / -vv                             # status lines / per-HTTP-request logs
+  -q                                   # suppress status lines
+```
+
+---
+
+## Plug it in elsewhere
+
+Sureguard isn't just a CLI. The same scanner backs four integration points:
+
+| When | What plugs in | Path |
+| --- | --- | --- |
+| **At generation time** (inside the agent) | Claude Code / Cursor / Continue calling Sureguard via MCP | [`integrations/claude-code/config-sample.json`](integrations/claude-code/config-sample.json), [`integrations/cursor/config-sample.json`](integrations/cursor/config-sample.json) |
+| **One-off demo** (paste a URL) | The hosted web UI | [`web/`](web/) |
+| **On pre-commit** (local) | `pre-commit` hook | [`integrations/pre-commit/.pre-commit-hooks.yaml`](integrations/pre-commit/.pre-commit-hooks.yaml) |
+| **On PR open** (CI) | GitHub Action | [`integrations/github-action/action.yml`](integrations/github-action/action.yml) |
+
+See [`docs/quickstart.md`](docs/quickstart.md) for full per-integration walkthroughs.
+
+---
+
+## Plug into your AI coding agent
+
+This is the highest-leverage integration — the agent calls Sureguard's tools mid-generation and self-corrects before writing files.
+
+### Claude Code
 
 ```jsonc
 // ~/.config/claude-code/mcp.json
@@ -98,15 +191,9 @@ Exit code is `0` if nothing meets `--fail-on`, `1` otherwise — drop it into an
 }
 ```
 
-Restart Claude Code. Verify with `/mcp` — you should see `sureguard` listed with 7+ tools.
+Restart Claude Code. Verify with `/mcp` — `sureguard` should appear with 7+ tools. Now ask the agent for dependency-heavy code and watch it call `verify_package` before suggesting any import.
 
-Now ask the agent for something dependency-heavy. Example prompt:
-
-> "Write a Python script that fetches data from an API and parses JSON. Use a popular HTTP library."
-
-Claude will call `verify_package("requests", "pypi")` before suggesting the import, and `scan_code(...)` on the generated script before writing it. If it tries to disable TLS, Sureguard's `scan_code` flags it and the agent self-corrects.
-
-#### Cursor
+### Cursor
 
 Settings → MCP → Add new MCP server. Paste:
 
@@ -121,90 +208,11 @@ Settings → MCP → Add new MCP server. Paste:
 }
 ```
 
-Same tools, same behaviour. The chat agent has Sureguard available throughout the session.
+### Any other MCP client
 
-#### Any other MCP client
-
-Sureguard speaks plain MCP over stdio. Anything that registers an MCP server will work — Continue, Zed, custom agents using `@modelcontextprotocol/sdk`, internal review bots.
-
-### 2. Pre-commit hook (local last-guard)
-
-`.pre-commit-config.yaml`:
-
-```yaml
-repos:
-  - repo: https://github.com/ExecutiveKoder/sureguard-code-scanner
-    rev: v0.1.0
-    hooks:
-      - id: sureguard-diff       # SAST + secrets over the staged diff
-      - id: sureguard-deps       # SCA + hallucination check on manifest changes
-```
-
-```bash
-pre-commit install
-```
-
-Every commit now runs Sureguard against its own diff. The hook fails the commit on HIGH or CRITICAL findings.
-
-### 3. GitHub Action (PR gate)
-
-`.github/workflows/security.yml`:
-
-```yaml
-name: Security review
-on: [pull_request]
-
-permissions:
-  contents: read
-  security-events: write
-
-jobs:
-  sureguard:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - uses: ExecutiveKoder/sureguard-code-scanner/integrations/github-action@main
-        with:
-          manifest: requirements.txt
-          fail-on: high
-```
-
-Findings post to GitHub code scanning (Security tab → Code scanning). `fail-on: high` blocks the PR on HIGH/CRITICAL only. Bump to `medium` once your baseline is clean.
-
-### 4. Post-deploy monitor (audit-grade)
-
-Run a daily job that passes your deployed SBOM (CycloneDX or SPDX) to `check_runtime_risk`. New CVE disclosures against shipped versions surface here — this is the control auditors actually care about because it proves you keep watching after release.
-
-```python
-import asyncio, json
-from sureguard_code_scanner.tools.check_runtime_risk import check_runtime_risk
-
-sbom = json.loads(open("deploy/sbom.cdx.json").read())
-result = asyncio.run(check_runtime_risk(sbom))
-
-for f in result.findings:
-    if f.in_kev:
-        print(f"P0  {f.title}  (CVE in CISA KEV — actively exploited)")
-```
+Sureguard speaks plain MCP over stdio. Continue, Zed, custom agents using `@modelcontextprotocol/sdk` all work.
 
 ---
-
-## The 7 tools, what they do, when to call them
-
-| Tool | Call when |
-| --- | --- |
-| `verify_package(name, ecosystem, version?)` | Before *any* package install / import an agent suggested. Returns `is_hallucinated`, `is_typosquat_suspect`, and candidates. |
-| `scan_code(content, language)` | After generating code, before writing to disk. Runs Semgrep with Sureguard's AI-aware rule pack. |
-| `scan_dependencies(manifest_filename, content)` | On any manifest change. Full SCA against OSV + KEV + EPSS, plus per-package hallucination check. |
-| `scan_diff(diff)` | PR review or pre-commit. Scans only the *added* lines from a unified diff. |
-| `scan_secrets(content, filename?)` | Anytime you generate config, env, or fixture data. Gitleaks if installed, pattern+entropy fallback otherwise. |
-| `check_runtime_risk(sbom)` | Post-deploy, on a schedule. Re-scans deployed components against new disclosures. |
-| `policy_for(language, framework?)` | At the *start* of a generation session. Returns the rule pack so the agent can avoid emitting the bad patterns in the first place. |
-
-All return either a `ScanResult` (with `findings: list[Finding]`) or a typed verification object. Findings have a `risk_score` blended from CVSS+EPSS+KEV — gate on that, not raw CVSS.
 
 ## A 60-second demo
 
@@ -218,27 +226,17 @@ jwt.decode(token, key, algorithms=["none"])
 ```
 
 ```bash
-python -c "
-import asyncio
-from sureguard_code_scanner.tools.scan_code import scan_code
-r = asyncio.run(scan_code(open('bad.py').read(), language='python'))
-for f in r.findings:
-    print(f'{f.severity.value.upper():8} {f.id} — {f.title}')
-"
+sureguard scan .
 ```
 
-Expected output:
+Expected: 3 HIGH findings (TLS disabled, MD5 for security, JWT alg=none).
 
-```
-ERROR    sureguard.python.requests-verify-false — TLS verification disabled
-ERROR    sureguard.python.md5-for-security — MD5 used for security
-ERROR    sureguard.python.jwt-alg-none — JWT signature verification disabled
-```
+---
 
 ## Architecture
 
 ```
-agent / CI / pre-commit hook
+agent / CI / pre-commit hook / web UI
             │
             ▼
    ┌────────────────────┐
@@ -253,15 +251,19 @@ Semgrep   OSV.dev + KEV + EPSS         Gitleaks
    │         │                             │
    └─────────┴──────────┬──────────────────┘
                         ▼
-              SARIF / structured JSON
+                Action plan + SARIF
 ```
 
-## What Sureguard does *not* do
+---
+
+## What Sureguard does **not** do
 
 - It does not detect unknown vulnerabilities — that is by definition impossible. We catch *n-days*, not *zero-days*.
 - It does not replace your existing enterprise SAST/SCA at scale. Use it as the AI-generation-aware layer on top.
 - It does not guarantee reachability for SCA findings. Treat reachability hints as triage help, not proof.
-- It does not phone home. All scanning is local; only the OSV / KEV / EPSS feeds are fetched (and cached).
+- It does not phone home. All scanning is local; only OSV / KEV / EPSS / package-registry feeds are fetched (and cached at `~/.cache/sureguard/`).
+
+---
 
 ## Development
 
@@ -269,13 +271,15 @@ Semgrep   OSV.dev + KEV + EPSS         Gitleaks
 git clone https://github.com/ExecutiveKoder/sureguard-code-scanner
 cd sureguard-code-scanner
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,web]"
 PYTHONPATH=server pytest
 ```
 
+---
+
 ## Status
 
-`v0.1.0` — alpha. The tool surface is stable. Rule packs and integrations will grow.
+`v0.1.0` — alpha. Tool surface is stable. Rule packs and integrations grow.
 
 ## License
 

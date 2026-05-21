@@ -350,7 +350,11 @@ async def _scan_target(
         _status("scanning for secrets (Gitleaks)…", args.quiet)
         try:
             sec_findings = await run_gitleaks(
-                target, include_env_secrets=args.include_env_secrets
+                target,
+                include_env_secrets=args.include_env_secrets or args.strict_secrets,
+                include_doc_secrets=args.include_doc_secrets or args.strict_secrets,
+                include_test_secrets=args.include_test_secrets or args.strict_secrets,
+                include_ide_secrets=args.include_ide_secrets or args.strict_secrets,
             )
             findings.extend(sec_findings)
             _status(
@@ -485,10 +489,27 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--include-env-secrets",
         action="store_true",
-        help=(
-            "Include secrets found in .env* files. Off by default because .env* files are "
-            "conventionally gitignored local config; their presence on disk isn't a leak."
-        ),
+        help="Include secrets in .env* files (off by default; local config, not a leak).",
+    )
+    scan.add_argument(
+        "--include-doc-secrets",
+        action="store_true",
+        help="Include secrets in docs (.md, .rst, .txt). Off by default — usually example tokens.",
+    )
+    scan.add_argument(
+        "--include-test-secrets",
+        action="store_true",
+        help="Include secrets in test fixtures (test_*, *_test, tests/, __tests__/, fixtures/). Off by default — usually throwaway.",
+    )
+    scan.add_argument(
+        "--include-ide-secrets",
+        action="store_true",
+        help="Include secrets in IDE config (.claude/, .vscode/, .idea/, .cursor/). Off by default.",
+    )
+    scan.add_argument(
+        "--strict-secrets",
+        action="store_true",
+        help="Audit mode — include ALL secret findings regardless of file type. Implies all --include-*-secrets flags.",
     )
     scan.add_argument("--no-deps", action="store_true", help="Skip manifest / SCA scan.")
     scan.add_argument("--json", action="store_true", help="Emit findings as JSON instead of summary.")
