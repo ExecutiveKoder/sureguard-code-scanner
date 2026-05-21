@@ -12,11 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from sureguard_code_scanner.actions import (
@@ -25,6 +24,7 @@ from sureguard_code_scanner.actions import (
     build_action_plan,
     project_score,
 )
+from sureguard_code_scanner.cloners import CloneError, git_clone_shallow, parse_github_url
 from sureguard_code_scanner.engines.gitleaks import (
     GitleaksNotInstalled,
     fallback_scan_text,
@@ -64,14 +64,9 @@ _MANIFESTS = {"requirements.txt", "package.json", "package-lock.json", "pyprojec
 MAX_REPO_BYTES = 200 * 1024 * 1024  # 200 MB cloned
 MAX_SCAN_SECONDS = 120  # hard wall-clock cap
 
-# Only allow github.com URLs. No tokens, no other hosts.
-_GITHUB_URL_RE = re.compile(
-    r"^https?://github\.com/([A-Za-z0-9._\-]+)/([A-Za-z0-9._\-]+?)(?:\.git)?/?$"
-)
-
-
-class ScanError(RuntimeError):
-    """User-presentable failure (bad URL, repo too big, timed out, etc.)."""
+# Re-export ScanError as a CloneError alias so the FastAPI route can stay
+# unchanged. Both are user-presentable validation/clone failures.
+ScanError = CloneError
 
 
 @dataclass
@@ -85,41 +80,6 @@ class ScanReport:
     findings: list[Finding]
     warnings: list[str]
     elapsed_ms: int
-
-
-def parse_github_url(url: str) -> tuple[str, str]:
-    """Return (owner, repo). Raises ScanError if the URL isn't a plain public github URL."""
-    url = url.strip()
-    m = _GITHUB_URL_RE.match(url)
-    if not m:
-        raise ScanError(
-            "Only public GitHub URLs are accepted (https://github.com/<owner>/<repo>)."
-        )
-    return m.group(1), m.group(2)
-
-
-async def _git_clone_shallow(url: str, dest: Path) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "clone",
-        "--depth=1",
-        "--single-branch",
-        "--no-tags",
-        url,
-        str(dest),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},  # never prompt for creds
-    )
-    try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise ScanError("Git clone timed out after 60s.") from None
-    if proc.returncode != 0:
-        msg = (stderr or b"").decode("utf-8", errors="replace")[:200].strip()
-        raise ScanError(f"Git clone failed: {msg or 'unknown error'}")
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -154,7 +114,7 @@ async def scan_github_url(url: str) -> ScanReport:
 
     workdir = Path(tempfile.mkdtemp(prefix="sureguard-web-"))
     try:
-        await _git_clone_shallow(url, workdir / "repo")
+        await git_clone_shallow(url, workdir / "repo")
         repo = workdir / "repo"
 
         size = _dir_size_bytes(repo)

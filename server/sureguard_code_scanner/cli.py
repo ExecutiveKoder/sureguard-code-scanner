@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 from .actions import Action, build_action_plan, project_score
+from .cloners import CloneError, git_clone_shallow, looks_like_url
 from .engines.gitleaks import GitleaksNotInstalled, run_gitleaks
 from .engines.semgrep import SemgrepNotInstalled, run_semgrep
 from .models import Finding, Location, Severity
@@ -276,19 +277,58 @@ def _status(msg: str, quiet: bool) -> None:
 
 
 async def _run_scan(args: argparse.Namespace) -> int:
-    target = Path(args.path).resolve()
-    if not target.exists():
-        print(f"error: {target} does not exist", file=sys.stderr)
-        return 2
-    if not target.is_dir():
-        print(f"error: {target} is not a directory (use `sureguard scan <dir>`)", file=sys.stderr)
-        return 2
+    import shutil
+    import tempfile
 
     started = time.monotonic()
     findings: list[Finding] = []
     warnings: list[str] = []
 
+    # `target_input` can be either a local directory or any git remote URL.
+    # If it's a URL, we shallow-clone into a temp dir and clean up at the end.
+    target_input = args.path
+    clone_dir: Path | None = None
+
+    if looks_like_url(target_input):
+        clone_dir = Path(tempfile.mkdtemp(prefix="sureguard-clone-"))
+        target = clone_dir / "repo"
+        _status(f"cloning {target_input}…", args.quiet)
+        try:
+            await git_clone_shallow(target_input, target)
+        except CloneError as e:
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        _status(f"cloned to {target}", args.quiet)
+    else:
+        target = Path(target_input).resolve()
+        if not target.exists():
+            print(f"error: {target} does not exist", file=sys.stderr)
+            return 2
+        if not target.is_dir():
+            print(
+                f"error: {target} is not a directory or a URL "
+                "(use `sureguard scan <dir>` or `sureguard scan https://github.com/owner/repo`)",
+                file=sys.stderr,
+            )
+            return 2
+
     _status(f"scanning {target}", args.quiet)
+
+    try:
+        return await _scan_target(args, target, started, findings, warnings)
+    finally:
+        if clone_dir is not None:
+            shutil.rmtree(clone_dir, ignore_errors=True)
+
+
+async def _scan_target(
+    args: argparse.Namespace,
+    target: Path,
+    started: float,
+    findings: list[Finding],
+    warnings: list[str],
+) -> int:
 
     if not args.no_sast:
         sast_started = time.monotonic()
