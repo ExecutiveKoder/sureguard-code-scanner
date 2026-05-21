@@ -12,7 +12,6 @@ import asyncio
 import json
 import math
 import re
-import shutil
 from pathlib import Path
 
 from ..models import Finding, Location, Severity
@@ -72,9 +71,18 @@ def _entropy(s: str) -> float:
 
 
 async def run_gitleaks(target_path: Path, timeout_seconds: int = 60) -> list[Finding]:
-    binary = shutil.which("gitleaks")
-    if not binary:
-        raise GitleaksNotInstalled("gitleaks not on PATH")
+    # Auto-installs on first run if not already on PATH or cached. Returns None
+    # only if the platform is unsupported, the download fails, or the user
+    # opted out via SUREGUARD_NO_AUTO_INSTALL.
+    from .gitleaks_installer import ensure_gitleaks
+
+    binary_path = ensure_gitleaks()
+    if binary_path is None:
+        raise GitleaksNotInstalled(
+            "gitleaks unavailable (auto-install skipped or failed). "
+            "Falling back to built-in pattern+entropy detector."
+        )
+    binary = str(binary_path)
 
     report = target_path / ".sureguard-gitleaks.json"
     if report.exists():
