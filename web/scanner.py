@@ -28,6 +28,7 @@ from sureguard_code_scanner.actions import (
 from sureguard_code_scanner.engines.gitleaks import (
     GitleaksNotInstalled,
     fallback_scan_text,
+    is_env_file_path,
     run_gitleaks,
 )
 from sureguard_code_scanner.engines.semgrep import SemgrepNotInstalled, run_semgrep
@@ -218,6 +219,9 @@ async def _run_pipeline(repo: Path, findings: list[Finding], warnings: list[str]
             if not path.is_file():
                 continue
             if path.stat().st_size > 1_000_000:  # 1MB per file ceiling for fallback
+                continue
+            # Skip .env* files — see is_env_file_path's docstring for rationale.
+            if is_env_file_path(str(path.relative_to(repo))):
                 continue
             try:
                 content = path.read_text(errors="ignore")

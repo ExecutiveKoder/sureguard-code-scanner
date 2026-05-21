@@ -21,6 +21,26 @@ class GitleaksNotInstalled(RuntimeError):
     pass
 
 
+# File-name patterns whose secret findings are excluded by default. Local .env
+# files are conventionally gitignored and hold per-machine config; their mere
+# presence on disk isn't a leak. If someone actually commits an .env file, the
+# correct fix is "stop committing it," not "rotate every value gitleaks scraped
+# out of it" — so by default we don't drown the action plan with one finding
+# per environment variable. Set `include_env_secrets=True` (CLI flag
+# `--include-env-secrets`) to re-include them.
+_ENV_PATH_PATTERNS = (
+    re.compile(r"(^|/)\.env(\..+)?$"),  # .env, .env.local, .env.bak, .env.production, .env.foo
+    re.compile(r"(^|/)\.env-[^/]+$"),  # .env-staging, .env-prod
+)
+
+
+def is_env_file_path(path: str | None) -> bool:
+    """True if the path looks like a `.env*` file we exclude from secret scans by default."""
+    if not path:
+        return False
+    return any(p.search(path) for p in _ENV_PATH_PATTERNS)
+
+
 _FALLBACK_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
     (
         "sureguard.secret.aws-access-key",
@@ -70,7 +90,12 @@ def _entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in freq.values())
 
 
-async def run_gitleaks(target_path: Path, timeout_seconds: int = 60) -> list[Finding]:
+async def run_gitleaks(
+    target_path: Path,
+    timeout_seconds: int = 60,
+    *,
+    include_env_secrets: bool = False,
+) -> list[Finding]:
     # Auto-installs on first run if not already on PATH or cached. Returns None
     # only if the platform is unsupported, the download fails, or the user
     # opted out via SUREGUARD_NO_AUTO_INSTALL.
@@ -119,6 +144,9 @@ async def run_gitleaks(target_path: Path, timeout_seconds: int = 60) -> list[Fin
 
     findings: list[Finding] = []
     for rec in records or []:
+        file_path = rec.get("File")
+        if not include_env_secrets and is_env_file_path(file_path):
+            continue
         findings.append(
             Finding(
                 id=f"sureguard.secret.{rec.get('RuleID', 'unknown')}",
@@ -127,7 +155,7 @@ async def run_gitleaks(target_path: Path, timeout_seconds: int = 60) -> list[Fin
                 category="secret",
                 message=rec.get("Description") or "Hardcoded secret detected.",
                 location=Location(
-                    path=rec.get("File"),
+                    path=file_path,
                     line=rec.get("StartLine"),
                     end_line=rec.get("EndLine"),
                     snippet=(rec.get("Match") or "")[:240] or None,

@@ -309,7 +309,9 @@ async def _run_scan(args: argparse.Namespace) -> int:
         sec_started = time.monotonic()
         _status("scanning for secrets (Gitleaks)…", args.quiet)
         try:
-            sec_findings = await run_gitleaks(target)
+            sec_findings = await run_gitleaks(
+                target, include_env_secrets=args.include_env_secrets
+            )
             findings.extend(sec_findings)
             _status(
                 f"Gitleaks done in {int((time.monotonic() - sec_started) * 1000)}ms — "
@@ -440,6 +442,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     scan.add_argument("--no-sast", action="store_true", help="Skip Semgrep SAST.")
     scan.add_argument("--no-secrets", action="store_true", help="Skip secrets scan.")
+    scan.add_argument(
+        "--include-env-secrets",
+        action="store_true",
+        help=(
+            "Include secrets found in .env* files. Off by default because .env* files are "
+            "conventionally gitignored local config; their presence on disk isn't a leak."
+        ),
+    )
     scan.add_argument("--no-deps", action="store_true", help="Skip manifest / SCA scan.")
     scan.add_argument("--json", action="store_true", help="Emit findings as JSON instead of summary.")
     scan.add_argument("--sarif", help="Write SARIF to this path (still prints summary).")
